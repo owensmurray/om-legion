@@ -15,7 +15,12 @@ module OM.Legion.Runtime (
   -- * Runtime Interface
   applyFast,
   applyConsistent,
+  readState,
   eject,
+
+  -- * Other types
+  ClusterId,
+  Peer,
 ) where
 
 
@@ -120,6 +125,13 @@ applyConsistent :: (MonadIO m)
 applyConsistent runtime e = call runtime (ApplyConsistent e)
 
 
+{- | Read the current powerstate value. -}
+readState :: (MonadIO m)
+  => Runtime e o s
+  -> m (PowerState ClusterId s Peer e o)
+readState runtime = call runtime ReadState
+
+
 {- | Eject a peer from the cluster. -}
 eject :: (MonadIO m) => Runtime e o s -> Peer -> m ()
 eject runtime peer = cast runtime (Eject peer)
@@ -132,6 +144,7 @@ data RuntimeMessage e o s
   | Eject Peer
   | Merge (PowerState ClusterId s Peer e o)
   | Join JoinRequest (Responder (JoinResponse e o s))
+  | ReadState (Responder (PowerState ClusterId s Peer e o))
   deriving (Show)
 
 
@@ -266,6 +279,9 @@ handleRuntimeMessage _runtime (Join (JoinRequest addr) responder) = do
   peer <- newPeer addr
   updateCluster (participate peer)
   respond responder . JoinOk peer . clusterState =<< get
+
+handleRuntimeMessage _runtime (ReadState responder) =
+  respond responder . clusterState =<< get
 
 
 {- |
