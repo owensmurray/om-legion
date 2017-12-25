@@ -135,7 +135,7 @@ data RuntimeMessage e o s
   deriving (Show)
 
 
-{- | The thing that identifies a cluster participant. -}
+{- | An opaque value that identifies a cluster participant. -}
 data Peer = Peer {
       _peerId :: UUID,
     peerAddy :: AddressDescription
@@ -144,7 +144,7 @@ data Peer = Peer {
 instance Binary Peer
 
 
-{- | The thing the identifies a cluster. -}
+{- | An opaque value that identifies a cluster. -}
 newtype ClusterId = ClusterId UUID
   deriving (Binary, Show, Eq)
 
@@ -266,7 +266,7 @@ handleRuntimeMessage _runtime (Join (JoinRequest addr) responder) = do
   peer <- newPeer addr
   updateCluster (participate peer)
   respond responder . JoinOk peer . clusterState =<< get
-    
+
 
 {- |
   Like 'runPowerStateT', plus automatically take care of doing necessary

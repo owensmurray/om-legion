@@ -6,7 +6,7 @@ module OM.Legion (
   RuntimeSettings(..),
   StartupMode(..),
 
-  -- * Interacting with the runtime.
+  -- * Applying state changes.
   applyFast,
   applyConsistent,
 
