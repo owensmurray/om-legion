@@ -6,9 +6,17 @@ module OM.Legion (
   RuntimeSettings(..),
   StartupMode(..),
 
-  -- * Interacting with the runtime.
+  -- * Applying state changes.
   applyFast,
   applyConsistent,
+
+  -- * Inspecting the current state.
+  PowerState,
+  readState,
+  infimumParticipants,
+  projParticipants,
+  infimumValue,
+  projectedValue,
 
   -- * Implementing your distributed data type.
   Event(..),
@@ -16,13 +24,17 @@ module OM.Legion (
   -- * Other types.
   ForkM(..),
   Runtime,
+  ClusterId,
+  Peer,
 ) where
 
 
 import OM.Legion.Fork (ForkM(forkM))
-import OM.Legion.PowerState (Event(apply))
+import OM.Legion.PowerState (Event(apply), PowerState, infimumValue,
+   infimumParticipants, infimumValue, projectedValue, projParticipants)
 import OM.Legion.Runtime (forkLegionary, StartupMode(NewCluster,
-   JoinCluster), Runtime, applyFast, applyConsistent)
+   JoinCluster), Runtime, applyFast, applyConsistent, readState,
+   ClusterId, Peer)
 import OM.Legion.Settings (RuntimeSettings(RuntimeSettings, peerBindAddr,
    joinBindAddr))
 
