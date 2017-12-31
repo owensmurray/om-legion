@@ -5,6 +5,7 @@ module OM.Legion.Settings (
 ) where
 
 
+import Data.ByteString (ByteString)
 import OM.Socket (Endpoint)
 
 
@@ -16,11 +17,13 @@ data RuntimeSettings = RuntimeSettings {
                       listen for rebalancing and cluster management
                       commands.
                     -}
-    joinBindAddr :: Endpoint
+    joinBindAddr :: Endpoint,
                     {- ^
                       The address on which the legion framework will
                       listen for cluster join requests.
                     -}
+    handleMessage :: ByteString -> IO ()
+                     {- ^ Handle a user message sent to us from another peer. -}
   }
 
 
