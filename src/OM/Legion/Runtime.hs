@@ -16,6 +16,7 @@ module OM.Legion.Runtime (
   applyFast,
   applyConsistent,
   readState,
+  sendMsg,
   eject,
 
   -- * Other types
@@ -37,6 +38,7 @@ import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (runExceptT)
 import Control.Monad.Trans.State (runStateT, StateT, get, put, modify)
 import Data.Binary (Binary)
+import Data.ByteString (ByteString)
 import Data.Conduit (runConduit, (.|), awaitForever, Source, yield)
 import Data.Default.Class (Default)
 import Data.Map (Map)
@@ -51,12 +53,11 @@ import OM.Legion.PowerState.Monad (PropAction(DoNothing, Send), event,
    acknowledge, runPowerStateT, merge, PowerStateT, disassociate,
    participate)
 import OM.Legion.Settings (RuntimeSettings(RuntimeSettings), peerBindAddr,
-   joinBindAddr)
+   joinBindAddr, handleMessage)
 import OM.Legion.UUID (getUUID)
 import OM.Show (showt)
 import OM.Socket (connectServer, bindAddr, AddressDescription, openEgress,
    Endpoint(Endpoint), openIngress, openServer)
-import qualified Data.Conduit.List as CL
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import qualified OM.Legion.PowerState as PS
@@ -66,9 +67,7 @@ import qualified OM.Legion.PowerState as PS
 data RuntimeState e o s = RuntimeState {
             self :: Peer,
     clusterState :: PowerState ClusterId s Peer e o,
-     connections :: Map
-                      Peer
-                      (PowerState ClusterId s Peer e o -> IO ()),
+     connections :: Map Peer (PeerMessage e o s -> IO ()),
          waiting :: Map (StateId Peer) (Responder o)
   }
 
@@ -132,6 +131,11 @@ readState :: (MonadIO m)
 readState runtime = call runtime ReadState
 
 
+{- | Send a user message to some other peer. -}
+sendMsg :: (MonadIO m) => Runtime e o s -> Peer -> ByteString -> m ()
+sendMsg runtime target msg = cast runtime (SendMsg target msg)
+
+
 {- | Eject a peer from the cluster. -}
 eject :: (MonadIO m) => Runtime e o s -> Peer -> m ()
 eject runtime peer = cast runtime (Eject peer)
@@ -145,7 +149,16 @@ data RuntimeMessage e o s
   | Merge (PowerState ClusterId s Peer e o)
   | Join JoinRequest (Responder (JoinResponse e o s))
   | ReadState (Responder (PowerState ClusterId s Peer e o))
+  | SendMsg Peer ByteString
   deriving (Show)
+
+
+{- | The types of messages that can be sent from one peer to another. -}
+data PeerMessage e o s
+  = PMMerge (PowerState ClusterId s Peer e o) {- ^ Send a powerstate merge. -}
+  | PMUser ByteString {- ^ Send a user message from one peer to another. -}
+  deriving (Generic)
+instance (Binary e, Binary s) => Binary (PeerMessage e o s)
 
 
 {- | An opaque value that identifies a cluster participant. -}
@@ -233,7 +246,11 @@ executeRuntime settings startupMode runtime = do
     startPeerListener = forkC "peer listener" $ 
       runConduit (
         openIngress (peerBindAddr settings)
-        .| CL.map Merge
+        .| awaitForever (\case
+             PMMerge ps -> yield (Merge ps)
+             PMUser bytes ->
+              (lift . forkM . liftIO) (handleMessage settings bytes)
+           )
         .| chanToSink (unRuntime runtime)
       )
 
@@ -283,6 +300,9 @@ handleRuntimeMessage _runtime (Join (JoinRequest addr) responder) = do
 handleRuntimeMessage _runtime (ReadState responder) =
   respond responder . clusterState =<< get
 
+handleRuntimeMessage _runtime (SendMsg target msg) =
+  sendPeer (PMUser msg) target
+
 
 {- |
   Like 'runPowerStateT', plus automatically take care of doing necessary
@@ -321,8 +341,11 @@ propagate :: (Binary e, Binary s, ForkM m, MonadCatch m, MonadLoggerIO m)
   -> StateT (RuntimeState e o s) m ()
 propagate DoNothing = return ()
 propagate Send = do
-    RuntimeState {self} <- get
-    mapM_ send . Set.delete self . PS.allParticipants . clusterState =<< get
+    RuntimeState {self, clusterState} <- get
+    mapM_ (sendPeer (PMMerge clusterState))
+      . Set.delete self
+      . PS.allParticipants
+      $ clusterState
     disconnectObsolete
   where
     {- |
@@ -335,57 +358,69 @@ propagate Send = do
         mapM_ disconnect $
           PS.allParticipants clusterState \\ Map.keysSet connections
 
-    {- | Disconnect the connection to a peer. -}
-    disconnect :: (MonadIO m) => Peer -> StateT (RuntimeState e o s) m ()
-    disconnect peer =
-      modify (\state@RuntimeState {connections} -> state {
-        connections = Map.delete peer connections
-      })
 
-    {- | Send a propagation, creating a new connection if need be. -}
-    send :: (Binary e, Binary s, ForkM m, MonadCatch m, MonadLoggerIO m)
-      => Peer
-      -> StateT (RuntimeState e o s) m ()
-    send peer = do
-      state@RuntimeState {clusterState, connections} <- get
-      case Map.lookup peer connections of
-        Nothing -> do
-          conn <- lift (createConnection peer)
-          put state {connections = Map.insert peer conn connections}
-          send peer
-        Just conn ->
-          (liftIO . tryAny) (conn clusterState) >>= \case
-            Left err -> do
-              $(logWarn) $ "Failure sending to peer: " <> showt (peer, err)
-              disconnect peer
-            Right () -> return ()
+{- | Send a propagation, creating a new connection if need be. -}
+sendPeer :: (Binary e, Binary s, ForkM m, MonadCatch m, MonadLoggerIO m)
+  => PeerMessage e o s
+  -> Peer
+  -> StateT (RuntimeState e o s) m ()
+sendPeer msg peer = do
+  state@RuntimeState {connections} <- get
+  case Map.lookup peer connections of
+    Nothing -> do
+      conn <- lift (createConnection peer)
+      put state {connections = Map.insert peer conn connections}
+      sendPeer msg peer
+    Just conn ->
+      (liftIO . tryAny) (conn msg) >>= \case
+        Left err -> do
+          $(logWarn) $ "Failure sending to peer: " <> showt (peer, err)
+          disconnect peer
+        Right () -> return ()
 
-    {- | Create a connection to a peer. -}
-    createConnection :: (
-          Binary e, Binary s, ForkM m, MonadCatch m, MonadLoggerIO m
-        )
-      => Peer
-      -> m (PowerState ClusterId s Peer e o -> IO ())
-    createConnection peer = do
-        latest <- liftIO $ atomically (newTVar Nothing)
-        forkM . forever $
-          (tryAny . runConduit) (
-            latestSource latest .| openEgress (peerAddy peer)
-          ) >>= \case
-            Left err -> $(logWarn) $ "Connection crashed: " <> showt (peer, err)
-            Right () -> $(logWarn) "Connection closed for no reason."
-        return (atomically . writeTVar latest . Just)
-      where
-        latestSource :: (MonadIO m)
-          => TVar (Maybe (PowerState ClusterId s Peer e o))
-          -> Source m (PowerState ClusterId s Peer e o)
-        latestSource latest = forever $ yield =<< (liftIO . atomically) (
-            readTVar latest >>= \case
-              Nothing -> retry
-              Just clusterState -> do
-                writeTVar latest Nothing
-                return clusterState
-          )
+
+{- | Disconnect the connection to a peer. -}
+disconnect :: (MonadIO m) => Peer -> StateT (RuntimeState e o s) m ()
+disconnect peer =
+  modify (\state@RuntimeState {connections} -> state {
+    connections = Map.delete peer connections
+  })
+
+
+{- | Create a connection to a peer. -}
+createConnection :: (
+      Binary e, Binary s, ForkM m, MonadCatch m, MonadLoggerIO m
+    )
+  => Peer
+  -> m (PeerMessage e o s -> IO ())
+createConnection peer = do
+    latest <- liftIO $ atomically (newTVar [])
+    forkM . forever $
+      (tryAny . runConduit) (
+        latestSource latest .| openEgress (peerAddy peer)
+      ) >>= \case
+        Left err -> $(logWarn) $ "Connection crashed: " <> showt (peer, err)
+        Right () -> $(logWarn) "Connection closed for no reason."
+    return (\msg ->
+        atomically $
+          readTVar latest >>= \msgs ->
+            writeTVar latest (
+              case msg of
+                PMMerge _ -> msg : [ m | m@(PMUser _) <- msgs ]
+                PMUser _ -> msgs ++ [msg]
+            )
+      )
+  where
+    latestSource :: (MonadIO m)
+      => TVar [PeerMessage e o s]
+      -> Source m (PeerMessage e o s)
+    latestSource latest = forever $ mapM_ yield =<< (liftIO . atomically) (
+        readTVar latest >>= \case
+          [] -> retry
+          messages -> do
+            writeTVar latest []
+            return messages
+      )
 
 
 {- |
