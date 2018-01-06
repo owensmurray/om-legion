@@ -153,6 +153,14 @@ instance (Binary p, Binary e) => Binary (Delta p e)
 class Event e o s | e -> s o where
   {- | Apply an event to a state value. **This function MUST be total!!!** -}
   apply :: e -> s -> (o, s)
+{- |
+  Some applications don't maintain any particular cluster-wide state, and
+  only want to use Legion for the peer management and communications. For
+  those applications, this instance is provided as a convenient no-op
+  'Event' instance.
+-}
+instance Event () () () where
+  apply () () = ((), ())
 
 
 {- |
