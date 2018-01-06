@@ -11,7 +11,10 @@ module OM.Legion (
   applyConsistent,
 
   -- * Sending messages around the cluster.
-  sendMsg,
+  cast,
+  call,
+  broadcast,
+  broadcall,
 
   -- * Inspecting the current state.
   PowerState,
@@ -37,7 +40,7 @@ import OM.Legion.PowerState (Event(apply), PowerState, infimumValue,
    infimumParticipants, infimumValue, projectedValue, projParticipants)
 import OM.Legion.Runtime (forkLegionary, StartupMode(NewCluster,
    JoinCluster), Runtime, applyFast, applyConsistent, readState,
-   ClusterId, Peer, sendMsg)
+   ClusterId, Peer, call, cast, broadcall, broadcast)
 import OM.Legion.Settings (RuntimeSettings(RuntimeSettings, peerBindAddr,
    joinBindAddr))
 
