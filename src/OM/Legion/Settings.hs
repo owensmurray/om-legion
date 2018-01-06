@@ -22,8 +22,8 @@ data RuntimeSettings = RuntimeSettings {
                       The address on which the legion framework will
                       listen for cluster join requests.
                     -}
-    handleMessage :: ByteString -> IO ()
-                     {- ^ Handle a user message sent to us from another peer. -}
+    handleUserCall :: ByteString -> IO ByteString,
+    handleUserCast :: ByteString -> IO ()
   }
 
 

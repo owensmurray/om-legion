@@ -16,8 +16,12 @@ module OM.Legion.Runtime (
   applyFast,
   applyConsistent,
   readState,
-  sendMsg,
+  call,
+  cast,
+  broadcall,
+  broadcast,
   eject,
+  getSelf,
 
   -- * Other types
   ClusterId,
@@ -37,23 +41,23 @@ import Control.Monad.Logger (MonadLoggerIO, logDebug, logInfo, logWarn,
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (runExceptT)
 import Control.Monad.Trans.State (runStateT, StateT, get, put, modify)
-import Data.Binary (Binary)
+import Data.Binary (Binary, Word64)
 import Data.ByteString (ByteString)
 import Data.Conduit (runConduit, (.|), awaitForever, Source, yield)
 import Data.Default.Class (Default)
 import Data.Map (Map)
 import Data.Monoid ((<>))
-import Data.Set ((\\))
+import Data.Set (Set, (\\))
 import Data.UUID (UUID)
 import GHC.Generics (Generic)
 import OM.Legion.Conduit (chanToSource, chanToSink)
 import OM.Legion.Fork (ForkM, forkC, forkM)
-import OM.Legion.PowerState (PowerState, Event, StateId)
+import OM.Legion.PowerState (PowerState, Event, StateId, projParticipants)
 import OM.Legion.PowerState.Monad (PropAction(DoNothing, Send), event,
    acknowledge, runPowerStateT, merge, PowerStateT, disassociate,
    participate)
 import OM.Legion.Settings (RuntimeSettings(RuntimeSettings), peerBindAddr,
-   joinBindAddr, handleMessage)
+   joinBindAddr, handleUserCall, handleUserCast)
 import OM.Legion.UUID (getUUID)
 import OM.Show (showt)
 import OM.Socket (connectServer, bindAddr, AddressDescription, openEgress,
@@ -68,7 +72,15 @@ data RuntimeState e o s = RuntimeState {
             self :: Peer,
     clusterState :: PowerState ClusterId s Peer e o,
      connections :: Map Peer (PeerMessage e o s -> IO ()),
-         waiting :: Map (StateId Peer) (Responder o)
+         waiting :: Map (StateId Peer) (Responder o),
+           calls :: Map MessageId (Responder ByteString),
+      broadcalls :: Map
+                      MessageId
+                      (
+                        Map Peer (Maybe ByteString),
+                        Responder (Map Peer ByteString)
+                      ),
+          nextId :: MessageId
   }
 
 
@@ -109,7 +121,7 @@ applyFast :: (MonadIO m)
   => Runtime e o s {- ^ The runtime handle. -}
   -> e             {- ^ The event to be applied. -}
   -> m o           {- ^ Returns the possibly inconsistent event output. -}
-applyFast runtime e = call runtime (ApplyFast e)
+applyFast runtime e = runtimeCall runtime (ApplyFast e)
 
 
 {- |
@@ -121,24 +133,64 @@ applyConsistent :: (MonadIO m)
   => Runtime e o s {- ^ The runtime handle. -}
   -> e             {- ^ The event to be applied. -}
   -> m o           {- ^ Returns the strongly consistent event output. -}
-applyConsistent runtime e = call runtime (ApplyConsistent e)
+applyConsistent runtime e = runtimeCall runtime (ApplyConsistent e)
 
 
 {- | Read the current powerstate value. -}
 readState :: (MonadIO m)
   => Runtime e o s
   -> m (PowerState ClusterId s Peer e o)
-readState runtime = call runtime ReadState
+readState runtime = runtimeCall runtime ReadState
 
 
-{- | Send a user message to some other peer. -}
-sendMsg :: (MonadIO m) => Runtime e o s -> Peer -> ByteString -> m ()
-sendMsg runtime target msg = cast runtime (SendMsg target msg)
+{- |
+  Send a user message to some other peer, and block until a response
+  is received.
+-}
+call :: (MonadIO m) => Runtime e o s -> Peer -> ByteString -> m ByteString
+call runtime target msg = runtimeCall runtime (Call target msg)
+
+
+{- | Send the result of a call back to the peer that originated it. -}
+sendCallResponse :: (MonadIO m)
+  => Runtime e o s
+  -> Peer
+  -> MessageId
+  -> ByteString
+  -> m ()
+sendCallResponse runtime target mid msg =
+  runtimeCast runtime (SendCallResponse target mid msg)
+
+
+{- | Send a user message to some other peer, without waiting on a response. -}
+cast :: (MonadIO m) => Runtime e o s -> Peer -> ByteString -> m ()
+cast runtime target message = runtimeCast runtime (Cast target message)
+
+
+{- |
+  Send a user message to all peers, and block until a response is received
+  from all of them.
+-}
+broadcall :: (MonadIO m)
+  => Runtime e o s
+  -> ByteString
+  -> m (Map Peer ByteString)
+broadcall runtime msg = runtimeCall runtime (Broadcall msg)
+
+
+{- | Send a user message to all peers, without wating on a response. -}
+broadcast :: (MonadIO m) => Runtime e o s -> ByteString -> m ()
+broadcast runtime msg = runtimeCast runtime (Broadcast msg)
 
 
 {- | Eject a peer from the cluster. -}
 eject :: (MonadIO m) => Runtime e o s -> Peer -> m ()
-eject runtime peer = cast runtime (Eject peer)
+eject runtime peer = runtimeCast runtime (Eject peer)
+
+
+{- | Get the identifier for the local peer. -}
+getSelf :: (MonadIO m) => Runtime e o s ->  m Peer
+getSelf runtime = runtimeCall runtime GetSelf
 
 
 {- | The types of messages that can be sent to the runtime. -}
@@ -149,14 +201,27 @@ data RuntimeMessage e o s
   | Merge (PowerState ClusterId s Peer e o)
   | Join JoinRequest (Responder (JoinResponse e o s))
   | ReadState (Responder (PowerState ClusterId s Peer e o))
-  | SendMsg Peer ByteString
+  | Call Peer ByteString (Responder ByteString)
+  | Cast Peer ByteString
+  | Broadcall ByteString (Responder (Map Peer ByteString))
+  | Broadcast ByteString
+  | SendCallResponse Peer MessageId ByteString
+  | HandleCallResponse Peer MessageId ByteString
+  | GetSelf (Responder Peer)
   deriving (Show)
 
 
 {- | The types of messages that can be sent from one peer to another. -}
 data PeerMessage e o s
-  = PMMerge (PowerState ClusterId s Peer e o) {- ^ Send a powerstate merge. -}
-  | PMUser ByteString {- ^ Send a user message from one peer to another. -}
+  = PMMerge (PowerState ClusterId s Peer e o)
+    {- ^ Send a powerstate merge. -}
+  | PMCall Peer MessageId ByteString
+    {- ^ Send a user call message from one peer to another. -}
+  | PMCast ByteString
+    {- ^ Send a user cast message from one peer to another. -}
+  | PMCallResponse Peer MessageId ByteString
+    {- ^ Send a response to a user call message. -}
+
   deriving (Generic)
 instance (Binary e, Binary s) => Binary (PeerMessage e o s)
 
@@ -189,19 +254,19 @@ respond responder = liftIO . unResponder responder
 
 
 {- | Send a message to the runtime that blocks on a response. -}
-call :: (MonadIO m)
+runtimeCall :: (MonadIO m)
   => Runtime e o s
   -> (Responder a -> RuntimeMessage e o s)
   -> m a
-call runtime withResonder = liftIO $ do
+runtimeCall runtime withResonder = liftIO $ do
   mvar <- newEmptyMVar
-  cast runtime (withResonder (Responder (putMVar mvar)))
+  runtimeCast runtime (withResonder (Responder (putMVar mvar)))
   takeMVar mvar
 
 
 {- | Send a message to the runtime. Do not wait for a result. -}
-cast :: (MonadIO m) => Runtime e o s -> RuntimeMessage e o s -> m ()
-cast runtime = liftIO . writeChan (unRuntime runtime)
+runtimeCast :: (MonadIO m) => Runtime e o s -> RuntimeMessage e o s -> m ()
+runtimeCast runtime = liftIO . writeChan (unRuntime runtime)
 
 
 {- |
@@ -239,7 +304,7 @@ executeRuntime settings startupMode runtime = do
       chanToSource (unRuntime runtime)
       .| awaitForever (\msg -> do
           $(logDebug) $ "Receieved: " <> showt msg
-          lift (handleRuntimeMessage runtime msg)
+          lift (handleRuntimeMessage msg)
         )
   where
     startPeerListener :: (ForkM m, MonadCatch m, MonadLoggerIO m) => m ()
@@ -248,8 +313,12 @@ executeRuntime settings startupMode runtime = do
         openIngress (peerBindAddr settings)
         .| awaitForever (\case
              PMMerge ps -> yield (Merge ps)
-             PMUser bytes ->
-              (lift . forkM . liftIO) (handleMessage settings bytes)
+             PMCall source mid msg -> liftIO . forkM $
+               sendCallResponse runtime source mid
+               =<< handleUserCall settings msg
+             PMCast msg -> (liftIO . forkM) (handleUserCast settings msg)
+             PMCallResponse source mid msg ->
+               yield (HandleCallResponse source mid msg)
            )
         .| chanToSink (unRuntime runtime)
       )
@@ -259,7 +328,7 @@ executeRuntime settings startupMode runtime = do
       runConduit (
         openServer (joinBindAddr settings)
         .| awaitForever (\(req, respond_) -> lift $
-            call runtime (Join req) >>= respond_
+            runtimeCall runtime (Join req) >>= respond_
           )
       )
 
@@ -269,39 +338,129 @@ handleRuntimeMessage :: (
       Binary e, Binary s, Eq e, Event e o s, ForkM m, MonadCatch m,
       MonadLoggerIO m
     )
-  => Runtime e o s
-  -> RuntimeMessage e o s
+  => RuntimeMessage e o s
   -> StateT (RuntimeState e o s) m ()
 
-handleRuntimeMessage _runtime (ApplyFast e responder) =
+handleRuntimeMessage (ApplyFast e responder) =
   updateCluster $ do
     (o, _sid) <- event e
     respond responder o
 
-handleRuntimeMessage _runtime (ApplyConsistent e responder) =
+handleRuntimeMessage (ApplyConsistent e responder) =
   updateCluster $ do
     (_v, sid) <- event e
     lift (waitOn sid responder)
 
-handleRuntimeMessage _runtime (Eject peer) =
+handleRuntimeMessage (Eject peer) =
   updateCluster $ disassociate peer
 
-handleRuntimeMessage _runtime (Merge other) =
+handleRuntimeMessage (Merge other) =
   updateCluster $
     runExceptT (merge other) >>= \case
       Left err -> $(logError) $ "Bad cluster merge: " <> showt err
       Right () -> return ()
 
-handleRuntimeMessage _runtime (Join (JoinRequest addr) responder) = do
+handleRuntimeMessage (Join (JoinRequest addr) responder) = do
   peer <- newPeer addr
   updateCluster (participate peer)
   respond responder . JoinOk peer . clusterState =<< get
 
-handleRuntimeMessage _runtime (ReadState responder) =
+handleRuntimeMessage (ReadState responder) =
   respond responder . clusterState =<< get
 
-handleRuntimeMessage _runtime (SendMsg target msg) =
-  sendPeer (PMUser msg) target
+handleRuntimeMessage (Call target msg responder) = do
+    mid <- newMessageId
+    source <- self <$> get
+    setCallResponder mid
+    sendPeer (PMCall source mid msg) target
+  where
+    setCallResponder :: (Monad m)
+      => MessageId
+      -> StateT (RuntimeState e o s) m ()
+    setCallResponder mid = do
+      state@RuntimeState {calls} <- get
+      put state {
+          calls = Map.insert mid responder calls
+        }
+
+handleRuntimeMessage (Cast target msg) =
+  sendPeer (PMCast msg) target
+
+handleRuntimeMessage (Broadcall msg responder) = do
+    mid <- newMessageId
+    source <- self <$> get
+    setBroadcallResponder mid
+    mapM_ (sendPeer (PMCall source mid msg)) =<< getPeers
+  where
+    setBroadcallResponder :: (Monad m)
+      => MessageId
+      -> StateT (RuntimeState e o s) m ()
+    setBroadcallResponder mid = do
+      peers <- getPeers
+      state@RuntimeState {broadcalls} <- get
+      put state {
+          broadcalls =
+            Map.insert
+              mid
+              (
+                Map.fromList [(peer, Nothing) | peer <- Set.toList peers],
+                responder
+              )
+              broadcalls
+        }
+
+handleRuntimeMessage (Broadcast msg) =
+  mapM_ (sendPeer (PMCast msg)) =<< getPeers
+
+handleRuntimeMessage (SendCallResponse target mid msg) = do
+  source <- self <$> get
+  sendPeer (PMCallResponse source mid msg) target
+
+handleRuntimeMessage (HandleCallResponse source mid msg) = do
+  state@RuntimeState {calls, broadcalls} <- get
+  case Map.lookup mid calls of
+    Nothing ->
+      case Map.lookup mid broadcalls of
+        Nothing -> return ()
+        Just (responses, responder) ->
+          let
+            responses2 = Map.insert source (Just msg) responses
+            response = Map.fromList [
+                (peer, r)
+                | (peer, Just r) <- Map.toList responses2
+              ]
+            peers = Map.keysSet responses2
+          in
+            if Set.null (Map.keysSet response \\ peers)
+              then do
+                respond responder response
+                put state {
+                    broadcalls = Map.delete mid broadcalls
+                  }
+              else
+                put state {
+                    broadcalls =
+                      Map.insert mid (responses2, responder) broadcalls
+                  }
+    Just responder -> do
+      respond responder msg
+      put state {calls = Map.delete mid calls}
+
+handleRuntimeMessage (GetSelf responder) =
+  respond responder =<< self <$> get
+
+
+{- | Get the projected peers. -}
+getPeers :: (Monad m) => StateT (RuntimeState e o s) m (Set Peer)
+getPeers = projParticipants . clusterState <$> get
+
+
+{- | Get a new messageId. -}
+newMessageId :: (Monad m) => StateT (RuntimeState e o s) m MessageId
+newMessageId = do
+  state@RuntimeState {nextId} <- get
+  put state {nextId = nextMessageId nextId}
+  return nextId
 
 
 {- |
@@ -359,7 +518,7 @@ propagate Send = do
           PS.allParticipants clusterState \\ Map.keysSet connections
 
 
-{- | Send a propagation, creating a new connection if need be. -}
+{- | Send a peer message, creating a new connection if need be. -}
 sendPeer :: (Binary e, Binary s, ForkM m, MonadCatch m, MonadLoggerIO m)
   => PeerMessage e o s
   -> Peer
@@ -406,8 +565,9 @@ createConnection peer = do
           readTVar latest >>= \msgs ->
             writeTVar latest (
               case msg of
-                PMMerge _ -> msg : [ m | m@(PMUser _) <- msgs ]
-                PMUser _ -> msgs ++ [msg]
+                PMMerge _ ->
+                  msg : filter (\case {PMMerge _ -> True; _ -> False}) msgs
+                _ -> msgs ++ [msg] 
             )
       )
   where
@@ -476,11 +636,15 @@ makeRuntimeState
     {- Build a brand new node state, for the first node in a cluster. -}
     self <- newPeer bindAddr
     clusterId <- ClusterId <$> getUUID
+    nextId <- newSequence
     return RuntimeState {
         self,
         clusterState = PS.new clusterId (Set.singleton self),
         connections = mempty,
-        waiting = mempty
+        waiting = mempty,
+        calls = mempty,
+        broadcalls = mempty,
+        nextId
       }
 
 makeRuntimeState
@@ -494,20 +658,19 @@ makeRuntimeState
       . JoinRequest
       . bindAddr
       $ peerBindAddr
+    nextId <- newSequence
     return RuntimeState {
         self,
         clusterState = cluster,
         connections = mempty,
-        waiting = mempty
+        waiting = mempty,
+        calls = mempty,
+        broadcalls = mempty,
+        nextId
       }
   where
     requestJoin :: (
-          Binary e,
-          Binary o,
-          Binary s,
-          MonadLoggerIO m,
-          Show e,
-          Show o,
+          Binary e, Binary o, Binary s, MonadLoggerIO m, Show e, Show o,
           Show s
         )
       => JoinRequest
@@ -531,5 +694,30 @@ data JoinResponse e o s
   = JoinOk Peer (PowerState ClusterId s Peer e o)
   deriving (Show, Generic)
 instance (Binary e, Binary s) => Binary (JoinResponse e o s)
+
+
+{- | Message Identifier. -}
+data MessageId = M UUID Word64 deriving (Generic, Show, Eq, Ord)
+instance Binary MessageId
+
+
+{- |
+  Initialize a new sequence of messageIds. It would be perfectly fine to ensure
+  unique message ids by generating a unique UUID for each one, but generating
+  UUIDs is not free, and we are probably going to be generating a lot of these.
+-}
+newSequence :: (MonadIO m) => m MessageId
+newSequence = do
+  sid <- getUUID
+  return (M sid 0)
+
+
+{- |
+  Generate the next message id in the sequence. We would normally use
+  `succ` for this kind of thing, but making `MessageId` an instance of
+  `Enum` really isn't appropriate.
+-}
+nextMessageId :: MessageId -> MessageId
+nextMessageId (M sequenceId ord) = M sequenceId (ord + 1)
 
 
