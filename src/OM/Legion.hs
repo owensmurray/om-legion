@@ -17,8 +17,9 @@ module OM.Legion (
   broadcall,
 
   -- * Inspecting the current state.
-  PowerState,
   readState,
+  getSelf,
+  PowerState,
   infimumParticipants,
   projParticipants,
   infimumValue,
@@ -40,8 +41,8 @@ import OM.Legion.PowerState (Event(apply), PowerState, infimumValue,
    infimumParticipants, infimumValue, projectedValue, projParticipants)
 import OM.Legion.Runtime (forkLegionary, StartupMode(NewCluster,
    JoinCluster), Runtime, applyFast, applyConsistent, readState,
-   ClusterId, Peer, call, cast, broadcall, broadcast)
+   ClusterId, Peer, call, cast, broadcall, broadcast, getSelf)
 import OM.Legion.Settings (RuntimeSettings(RuntimeSettings, peerBindAddr,
-   joinBindAddr))
+   joinBindAddr, handleUserCall, handleUserCast))
 
 

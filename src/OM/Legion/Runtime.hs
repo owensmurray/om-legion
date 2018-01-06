@@ -21,6 +21,7 @@ module OM.Legion.Runtime (
   broadcall,
   broadcast,
   eject,
+  getSelf,
 
   -- * Other types
   ClusterId,
@@ -187,6 +188,11 @@ eject :: (MonadIO m) => Runtime e o s -> Peer -> m ()
 eject runtime peer = runtimeCast runtime (Eject peer)
 
 
+{- | Get the identifier for the local peer. -}
+getSelf :: (MonadIO m) => Runtime e o s ->  m Peer
+getSelf runtime = runtimeCall runtime GetSelf
+
+
 {- | The types of messages that can be sent to the runtime. -}
 data RuntimeMessage e o s
   = ApplyFast e (Responder o)
@@ -201,6 +207,7 @@ data RuntimeMessage e o s
   | Broadcast ByteString
   | SendCallResponse Peer MessageId ByteString
   | HandleCallResponse Peer MessageId ByteString
+  | GetSelf (Responder Peer)
   deriving (Show)
 
 
@@ -438,6 +445,9 @@ handleRuntimeMessage (HandleCallResponse source mid msg) = do
     Just responder -> do
       respond responder msg
       put state {calls = Map.delete mid calls}
+
+handleRuntimeMessage (GetSelf responder) =
+  respond responder =<< self <$> get
 
 
 {- | Get the projected peers. -}
