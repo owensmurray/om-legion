@@ -52,19 +52,19 @@ import Data.UUID (UUID)
 import GHC.Generics (Generic)
 import OM.Fork (ForkM, forkC, forkM)
 import OM.Legion.Conduit (chanToSource, chanToSink)
-import OM.Legion.PowerState (PowerState, Event, StateId, projParticipants)
-import OM.Legion.PowerState.Monad (PropAction(DoNothing, Send), event,
-   acknowledge, runPowerStateT, merge, PowerStateT, disassociate,
-   participate)
 import OM.Legion.Settings (RuntimeSettings(RuntimeSettings), peerBindAddr,
    joinBindAddr, handleUserCall, handleUserCast)
 import OM.Legion.UUID (getUUID)
+import OM.PowerState (PowerState, Event, StateId, projParticipants)
+import OM.PowerState.Monad (PropAction(DoNothing, Send), event,
+   acknowledge, runPowerStateT, merge, PowerStateT, disassociate,
+   participate)
 import OM.Show (showt)
 import OM.Socket (connectServer, bindAddr, AddressDescription, openEgress,
    Endpoint(Endpoint), openIngress, openServer)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
-import qualified OM.Legion.PowerState as PS
+import qualified OM.PowerState as PS
 
 
 {- | The Legionary runtime state. -}

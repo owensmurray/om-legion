@@ -19,14 +19,6 @@ module OM.Legion (
   -- * Inspecting the current state.
   readState,
   getSelf,
-  PowerState,
-  infimumParticipants,
-  projParticipants,
-  infimumValue,
-  projectedValue,
-
-  -- * Implementing your distributed data type.
-  Event(..),
 
   -- * Other types.
   Runtime,
@@ -35,8 +27,6 @@ module OM.Legion (
 ) where
 
 
-import OM.Legion.PowerState (Event(apply), PowerState, infimumValue,
-   infimumParticipants, infimumValue, projectedValue, projParticipants)
 import OM.Legion.Runtime (forkLegionary, StartupMode(NewCluster,
    JoinCluster), Runtime, applyFast, applyConsistent, readState,
    ClusterId, Peer, call, cast, broadcall, broadcast, getSelf)
