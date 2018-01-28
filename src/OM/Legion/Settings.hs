@@ -5,7 +5,7 @@ module OM.Legion.Settings (
 ) where
 
 
-import Data.ByteString (ByteString)
+import Data.ByteString.Lazy (ByteString)
 import OM.Socket (Endpoint)
 
 
