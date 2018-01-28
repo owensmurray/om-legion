@@ -50,8 +50,8 @@ import Data.Monoid ((<>))
 import Data.Set (Set, (\\))
 import Data.UUID (UUID)
 import GHC.Generics (Generic)
+import OM.Fork (ForkM, forkC, forkM)
 import OM.Legion.Conduit (chanToSource, chanToSink)
-import OM.Legion.Fork (ForkM, forkC, forkM)
 import OM.Legion.PowerState (PowerState, Event, StateId, projParticipants)
 import OM.Legion.PowerState.Monad (PropAction(DoNothing, Send), event,
    acknowledge, runPowerStateT, merge, PowerStateT, disassociate,
