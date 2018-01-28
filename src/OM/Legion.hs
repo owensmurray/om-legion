@@ -29,14 +29,12 @@ module OM.Legion (
   Event(..),
 
   -- * Other types.
-  ForkM(..),
   Runtime,
   ClusterId,
   Peer,
 ) where
 
 
-import OM.Legion.Fork (ForkM(forkM))
 import OM.Legion.PowerState (Event(apply), PowerState, infimumValue,
    infimumParticipants, infimumValue, projectedValue, projParticipants)
 import OM.Legion.Runtime (forkLegionary, StartupMode(NewCluster,

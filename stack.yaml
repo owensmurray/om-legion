@@ -1,10 +1,11 @@
 flags: {}
 extra-package-dbs: []
 packages:
-- '.'
+- .
 extra-deps:
-- legion-discovery-client-0.2.1.0
-- load-balancing-1.0.1.0
-- om-show-0.1.0.0
-- om-socket-0.5.0.0
-resolver: lts-9.13
+- legion-discovery-client-0.2.1.1
+- load-balancing-1.0.1.1
+- om-fork-0.1.0.0
+- om-show-0.1.0.1
+- om-socket-0.5.0.1
+resolver: lts-10.3
