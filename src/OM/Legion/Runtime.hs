@@ -52,8 +52,6 @@ import Data.UUID (UUID)
 import GHC.Generics (Generic)
 import OM.Fork (ForkM, forkC, forkM)
 import OM.Legion.Conduit (chanToSource, chanToSink)
-import OM.Legion.Settings (RuntimeSettings(RuntimeSettings), peerBindAddr,
-   joinBindAddr, handleUserCall, handleUserCast)
 import OM.Legion.UUID (getUUID)
 import OM.PowerState (PowerState, Event, StateId, projParticipants)
 import OM.PowerState.Monad (PropAction(DoNothing, Send), event,
@@ -89,19 +87,43 @@ forkLegionary :: (
       Binary e, Binary o, Binary s, Default s, Eq e, Event e o s, ForkM m,
       MonadCatch m, MonadLoggerIO m, Show e, Show o, Show s
     )
-  => RuntimeSettings
-     {- ^ The general runtime configuration. -}
+  => Endpoint
+     {- ^
+       The address on which the legion framework will listen for
+       rebalancing and cluster management commands.
+     -}
+  -> Endpoint
+     {- ^
+       The address on which the legion framework will listen for cluster
+       join requests.
+     -}
+  -> (ByteString -> IO ByteString)
+     {- ^ Handle a user call request.  -}
+  -> (ByteString -> IO ())
+     {- ^ Handle a user cast message. -}
   -> StartupMode
      {- ^
        How to start the runtime, by creating new cluster or joining an
        existing cluster.
      -}
   -> m (Runtime e o s)
-forkLegionary settings startupMode = do
-  runtime <- Runtime <$> liftIO newChan
-  forkC "main legion thread" $
-    executeRuntime settings startupMode runtime
-  return runtime
+forkLegionary
+    peerBindAddr
+    joinBindAddr
+    handleUserCall
+    handleUserCast
+    startupMode
+  = do
+    runtime <- Runtime <$> liftIO newChan
+    forkC "main legion thread" $
+      executeRuntime
+        peerBindAddr
+        joinBindAddr
+        handleUserCall
+        handleUserCast
+        startupMode
+        runtime
+    return runtime
 
 
 {- | A handle on the Legion runtime. -}
@@ -278,18 +300,37 @@ executeRuntime :: (
       Binary e, Binary o, Binary s, Default s, Eq e, Event e o s, ForkM m,
       MonadCatch m, MonadLoggerIO m, Show e, Show o, Show s
     )
-  => RuntimeSettings
-    {- ^ Settings and configuration of the legionframework.  -}
+  => Endpoint
+     {- ^
+       The address on which the legion framework will listen for
+       rebalancing and cluster management commands.
+     -}
+  -> Endpoint
+     {- ^
+       The address on which the legion framework will listen for cluster
+       join requests.
+     -}
+  -> (ByteString -> IO ByteString)
+     {- ^ Handle a user call request.  -}
+  -> (ByteString -> IO ())
+     {- ^ Handle a user cast message. -}
   -> StartupMode
   -> Runtime e o s
     {- ^ A source of requests, together with a way to respond to the requets. -}
   -> m ()
-executeRuntime settings startupMode runtime = do
+executeRuntime
+    peerBindAddr
+    joinBindAddr
+    handleUserCall
+    handleUserCast
+    startupMode
+    runtime
+  = do
     {- Start the various messages sources. -}
     startPeerListener
     startJoinListener
 
-    rts <- makeRuntimeState settings startupMode
+    rts <- makeRuntimeState peerBindAddr startupMode
     void . (`runStateT` rts) . runConduit $
       chanToSource (unRuntime runtime)
       .| awaitForever (\msg -> do
@@ -300,13 +341,13 @@ executeRuntime settings startupMode runtime = do
     startPeerListener :: (ForkM m, MonadCatch m, MonadLoggerIO m) => m ()
     startPeerListener = forkC "peer listener" $ 
       runConduit (
-        openIngress (peerBindAddr settings)
+        openIngress peerBindAddr
         .| awaitForever (\case
              PMMerge ps -> yield (Merge ps)
              PMCall source mid msg -> liftIO . forkM $
                sendCallResponse runtime source mid
-               =<< handleUserCall settings msg
-             PMCast msg -> (liftIO . forkM) (handleUserCast settings msg)
+               =<< handleUserCall msg
+             PMCast msg -> (liftIO . forkM) (handleUserCast msg)
              PMCallResponse source mid msg ->
                yield (HandleCallResponse source mid msg)
            )
@@ -316,7 +357,7 @@ executeRuntime settings startupMode runtime = do
     startJoinListener :: (ForkM m, MonadCatch m, MonadLoggerIO m) => m ()
     startJoinListener = forkC "join listener" $
       runConduit (
-        openServer (joinBindAddr settings)
+        openServer joinBindAddr
         .| awaitForever (\(req, respond_) -> lift $
             runtimeCall runtime (Join req) >>= respond_
           )
@@ -609,12 +650,12 @@ makeRuntimeState :: (
       Binary e, Binary o, Binary s, Default s, MonadLoggerIO m, Show e,
       Show o, Show s
     )
-  => RuntimeSettings
+  => Endpoint
   -> StartupMode
   -> m (RuntimeState e o s)
 
 makeRuntimeState
-    RuntimeSettings {peerBindAddr = Endpoint {bindAddr}}
+    Endpoint {bindAddr}
     NewCluster
   = do
     {- Build a brand new node state, for the first node in a cluster. -}
@@ -632,7 +673,7 @@ makeRuntimeState
       }
 
 makeRuntimeState
-    RuntimeSettings {peerBindAddr}
+    peerBindAddr
     (JoinCluster addr)
   = do
     {- Join a cluster an existing cluster. -}

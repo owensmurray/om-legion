@@ -23,7 +23,6 @@ library
   other-modules:       
     OM.Legion.Conduit
     OM.Legion.Runtime
-    OM.Legion.Settings
     OM.Legion.UUID
   -- other-extensions:    
   build-depends:
