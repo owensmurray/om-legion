@@ -275,18 +275,8 @@ runtimeCast runtime = liftIO . writeChan (unRuntime runtime)
   exception if something goes horribly wrong).
 -}
 executeRuntime :: (
-      Binary e,
-      Binary o,
-      Binary s,
-      Default s,
-      Eq e,
-      Event e o s,
-      ForkM m,
-      MonadCatch m,
-      MonadLoggerIO m,
-      Show e,
-      Show o,
-      Show s
+      Binary e, Binary o, Binary s, Default s, Eq e, Event e o s, ForkM m,
+      MonadCatch m, MonadLoggerIO m, Show e, Show o, Show s
     )
   => RuntimeSettings
     {- ^ Settings and configuration of the legionframework.  -}
@@ -616,14 +606,8 @@ data StartupMode
 
 {- | Initialize the runtime state. -}
 makeRuntimeState :: (
-      Binary e,
-      Binary o,
-      Binary s,
-      Default s,
-      MonadLoggerIO m,
-      Show e,
-      Show o,
-      Show s
+      Binary e, Binary o, Binary s, Default s, MonadLoggerIO m, Show e,
+      Show o, Show s
     )
   => RuntimeSettings
   -> StartupMode
