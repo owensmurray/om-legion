@@ -121,7 +121,8 @@ forkLegionary
     notify
     startupMode
   = do
-    runtime <- Runtime <$> liftIO newChan
+    rts <- makeRuntimeState peerBindAddr notify startupMode
+    runtime <- Runtime <$> liftIO newChan <*> pure (self rts)
     forkC "main legion thread" $
       executeRuntime
         peerBindAddr
@@ -129,14 +130,15 @@ forkLegionary
         handleUserCall
         handleUserCast
         notify
-        startupMode
+        rts
         runtime
     return runtime
 
 
 {- | A handle on the Legion runtime. -}
-newtype Runtime e o s = Runtime {
-    unRuntime :: Chan (RuntimeMessage e o s)
+data Runtime e o s = Runtime {
+    rChan :: Chan (RuntimeMessage e o s),
+    rSelf :: Peer
   }
 
 
@@ -219,8 +221,8 @@ eject runtime peer = runtimeCast runtime (Eject peer)
 
 
 {- | Get the identifier for the local peer. -}
-getSelf :: (MonadIO m) => Runtime e o s ->  m Peer
-getSelf runtime = runtimeCall runtime GetSelf
+getSelf :: Runtime e o s -> Peer
+getSelf = rSelf
 
 
 {- | The types of messages that can be sent to the runtime. -}
@@ -237,7 +239,6 @@ data RuntimeMessage e o s
   | Broadcast ByteString
   | SendCallResponse Peer MessageId ByteString
   | HandleCallResponse Peer MessageId ByteString
-  | GetSelf (Responder Peer)
   deriving (Show)
 
 
@@ -302,7 +303,7 @@ runtimeCall runtime withResonder = liftIO $ do
 
 {- | Send a message to the runtime. Do not wait for a result. -}
 runtimeCast :: (MonadIO m) => Runtime e o s -> RuntimeMessage e o s -> m ()
-runtimeCast runtime = liftIO . writeChan (unRuntime runtime)
+runtimeCast runtime = liftIO . writeChan (rChan runtime)
 
 
 {- |
@@ -330,7 +331,7 @@ executeRuntime :: (
      {- ^ Handle a user cast message. -}
   -> (PowerState ClusterId s Peer e o -> IO ())
      {- ^ Callback when the cluster-wide powerstate changes. -}
-  -> StartupMode
+  -> RuntimeState e o s
   -> Runtime e o s
     {- ^ A source of requests, together with a way to respond to the requets. -}
   -> m ()
@@ -340,16 +341,15 @@ executeRuntime
     handleUserCall
     handleUserCast
     notify
-    startupMode
+    rts
     runtime
   = do
     {- Start the various messages sources. -}
     startPeerListener
     startJoinListener
 
-    rts <- makeRuntimeState peerBindAddr notify startupMode
     void . (`runStateT` rts) . runConduit $
-      chanToSource (unRuntime runtime)
+      chanToSource (rChan runtime)
       .| awaitForever (\msg -> do
           $(logDebug) $ "Receieved: " <> showt msg
           lift $ do
@@ -372,7 +372,7 @@ executeRuntime
              PMCallResponse source mid msg ->
                yield (HandleCallResponse source mid msg)
            )
-        .| chanToSink (unRuntime runtime)
+        .| chanToSink (rChan runtime)
       )
 
     startJoinListener :: (ForkM m, MonadCatch m, MonadLoggerIO m) => m ()
@@ -497,9 +497,6 @@ handleRuntimeMessage (HandleCallResponse source mid msg) = do
     Just responder -> do
       respond responder msg
       put state {calls = Map.delete mid calls}
-
-handleRuntimeMessage (GetSelf responder) =
-  respond responder =<< self <$> get
 
 
 {- | Get the projected peers. -}
