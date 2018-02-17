@@ -41,6 +41,9 @@ import Control.Monad.Logger (MonadLoggerIO, logDebug, logInfo, logWarn,
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (runExceptT)
 import Control.Monad.Trans.State (runStateT, StateT, get, put, modify)
+import Data.Aeson (ToJSON, toJSON, ToJSONKey, toJSONKey,
+   ToJSONKeyFunction(ToJSONKeyText))
+import Data.Aeson.Encoding (text)
 import Data.Binary (Binary, Word64)
 import Data.ByteString.Lazy (ByteString)
 import Data.Conduit (runConduit, (.|), awaitForever, Source, yield)
@@ -261,12 +264,16 @@ data Peer = Peer {
   deriving (Generic, Eq, Ord)
 instance Show Peer where
   show peer = show (peerId peer) ++ ":" ++ show (peerAddy peer)
+instance ToJSONKey Peer where
+  toJSONKey = ToJSONKeyText showt (text . showt)
+instance ToJSON Peer where
+  toJSON = toJSON . show
 instance Binary Peer
 
 
 {- | An opaque value that identifies a cluster. -}
 newtype ClusterId = ClusterId UUID
-  deriving (Binary, Show, Eq)
+  deriving (Binary, Show, Eq, ToJSON)
 
 
 {- | A way for the runtime to respond to a message. -}
