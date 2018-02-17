@@ -2,7 +2,7 @@
 -- documentation, see http://haskell.org/cabal/users-guide/
 
 name:                om-legion
-version:             0.7.0.0
+version:             0.7.0.1
 synopsis:            Core Legion Framework.
 -- description:         
 homepage:            https://github.com/owensmurray/om-legion2
@@ -35,7 +35,7 @@ library
     data-default-class >= 0.1.2.0  && < 0.2,
     monad-logger       >= 0.3.25.1 && < 0.4,
     om-fork            >= 0.1.0.0  && < 0.2,
-    om-powerstate      >= 0.1.0.0  && < 0.2,
+    om-powerstate      >= 0.1.0.0  && < 0.3,
     om-show            >= 0.1.0.0  && < 0.2,
     om-socket          >= 0.5.0.0  && < 0.6,
     safe-exceptions    >= 0.1.6.0  && < 0.2,
