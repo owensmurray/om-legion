@@ -255,10 +255,12 @@ instance (Binary e, Binary s) => Binary (PeerMessage e o s)
 
 {- | An opaque value that identifies a cluster participant. -}
 data Peer = Peer {
-      _peerId :: UUID,
+      peerId :: UUID,
     peerAddy :: AddressDescription
   }
-  deriving (Generic, Show, Eq, Ord)
+  deriving (Generic, Eq, Ord)
+instance Show Peer where
+  show peer = show (peerId peer) ++ ":" ++ show (peerAddy peer)
 instance Binary Peer
 
 
