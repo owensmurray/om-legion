@@ -35,10 +35,11 @@ import Control.Concurrent (Chan, newEmptyMVar, putMVar, takeMVar,
 import Control.Concurrent.STM (TVar, atomically, newTVar, writeTVar,
    readTVar, retry)
 import Control.Exception.Safe (MonadCatch, tryAny)
-import Control.Monad (void, forever, when)
+import Control.Monad (void, when, join)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Logger (MonadLoggerIO, logDebug, logInfo, logWarn,
    logError)
+import Control.Monad.Morph (hoist)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (runExceptT)
 import Control.Monad.Trans.State (runStateT, StateT, get, put, modify)
@@ -77,7 +78,9 @@ import qualified OM.PowerState as PS
 data RuntimeState e o s = RuntimeState {
             self :: Peer,
     clusterState :: PowerState ClusterId s Peer e o,
-     connections :: Map Peer (PeerMessage e o s -> IO ()),
+     connections :: Map
+                      Peer
+                      (PeerMessage e o s -> StateT (RuntimeState e o s) IO ()),
          waiting :: Map (StateId Peer) (Responder o),
            calls :: Map MessageId (Responder ByteString),
       broadcalls :: Map
@@ -608,7 +611,7 @@ sendPeer msg peer = do
       put state {connections = Map.insert peer conn connections}
       sendPeer msg peer
     Just conn ->
-      (liftIO . tryAny) (conn msg) >>= \case
+      (hoist liftIO . tryAny) (conn msg) >>= \case
         Left err -> do
           $(logWarn) $ "Failure sending to peer: " <> showt (peer, err)
           disconnect peer
@@ -628,36 +631,49 @@ createConnection :: (
       Binary e, Binary s, ForkM m, MonadCatch m, MonadLoggerIO m
     )
   => Peer
-  -> m (PeerMessage e o s -> IO ())
+  -> m (PeerMessage e o s -> StateT (RuntimeState e o s) IO ())
 createConnection peer = do
-    latest <- liftIO $ atomically (newTVar [])
-    forkM . forever $
+    latest <- liftIO $ atomically (newTVar (Just []))
+    forkM $ do
       (tryAny . runConduit) (
-        latestSource latest .| openEgress (peerAddy peer)
-      ) >>= \case
-        Left err -> $(logWarn) $ "Connection crashed: " <> showt (peer, err)
-        Right () -> $(logWarn) "Connection closed for no reason."
+          latestSource latest .| openEgress (peerAddy peer)
+        ) >>= \case
+          Left err -> $(logWarn) $ "Connection crashed: " <> showt (peer, err)
+          Right () -> $(logWarn) "Connection closed for no reason."
+      liftIO $ atomically (writeTVar latest Nothing)
     return (\msg ->
-        atomically $
-          readTVar latest >>= \msgs ->
-            writeTVar latest (
-              case msg of
-                PMMerge _ ->
-                  msg : filter (\case {PMMerge _ -> True; _ -> False}) msgs
-                _ -> msgs ++ [msg] 
-            )
+        join . liftIO . atomically $
+          readTVar latest >>= \case
+            Nothing ->
+              return $ modify (\state -> state {
+                  connections = Map.delete peer (connections state)
+                })
+            Just msgs -> do
+              writeTVar latest (
+                  Just $ case msg of
+                    PMMerge _ ->
+                      msg : filter (\case {PMMerge _ -> False; _ -> True}) msgs
+                    _ -> msgs ++ [msg] 
+                )
+              return (return ())
       )
   where
     latestSource :: (MonadIO m)
-      => TVar [PeerMessage e o s]
+      => TVar (Maybe [PeerMessage e o s])
       -> Source m (PeerMessage e o s)
-    latestSource latest = forever $ mapM_ yield =<< (liftIO . atomically) (
+    latestSource latest =
+      (liftIO . atomically) (
         readTVar latest >>= \case
-          [] -> retry
-          messages -> do
-            writeTVar latest []
-            return messages
-      )
+          Nothing -> return Nothing
+          Just [] -> retry
+          Just messages -> do
+            writeTVar latest (Just [])
+            return (Just messages)
+      ) >>= \case
+        Nothing -> return ()
+        Just messages -> do
+          mapM_ yield messages
+          latestSource latest
 
 
 {- |
