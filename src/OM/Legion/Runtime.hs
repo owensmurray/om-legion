@@ -1,9 +1,13 @@
+{-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns #-}
 
 {- | The meat of the Legion runtime implementation. -}
@@ -59,7 +63,7 @@ import OM.Fork (ForkM, forkC, forkM)
 import OM.Legion.Conduit (chanToSource, chanToSink)
 import OM.Legion.UUID (getUUID)
 import OM.PowerState (PowerState, Event, StateId, projParticipants,
-   EventPack, events)
+   EventPack, events, Output, State)
 import OM.PowerState.Monad (PropAction(DoNothing, Send), event,
    acknowledge, runPowerStateT, merge, PowerStateT, disassociate,
    participate)
@@ -76,13 +80,13 @@ import qualified OM.PowerState as PS
 
 
 {- | The Legionary runtime state. -}
-data RuntimeState e o s = RuntimeState {
+data RuntimeState e = RuntimeState {
             self :: Peer,
-    clusterState :: PowerState ClusterId s Peer e o,
+    clusterState :: PowerState ClusterId Peer e,
      connections :: Map
                       Peer
-                      (PeerMessage e -> StateT (RuntimeState e o s) IO ()),
-         waiting :: Map (StateId Peer) (Responder o),
+                      (PeerMessage e -> StateT (RuntimeState e) IO ()),
+         waiting :: Map (StateId Peer) (Responder (Output e)),
            calls :: Map MessageId (Responder ByteString),
       broadcalls :: Map
                       MessageId
@@ -91,14 +95,15 @@ data RuntimeState e o s = RuntimeState {
                         Responder (Map Peer ByteString)
                       ),
           nextId :: MessageId,
-          notify :: PowerState ClusterId s Peer e o -> IO ()
+          notify :: PowerState ClusterId Peer e -> IO ()
   }
 
 
 {- | Fork the Legion runtime system. -}
 forkLegionary :: (
-      Binary e, Binary o, Binary s, Default s, Eq e, Event e o s, ForkM m,
-      MonadCatch m, MonadLoggerIO m, Show e, Show o, Show s
+      Binary (State e), Binary e, Default (State e), Eq e, Event e,
+      Show e, ToJSON (State e), ToJSON e, ForkM m, MonadCatch m,
+      MonadLoggerIO m
     )
   => Endpoint
      {- ^
@@ -114,14 +119,14 @@ forkLegionary :: (
      {- ^ Handle a user call request.  -}
   -> (ByteString -> IO ())
      {- ^ Handle a user cast message. -}
-  -> (PowerState ClusterId s Peer e o -> IO ())
+  -> (PowerState ClusterId Peer e -> IO ())
      {- ^ Callback when the cluster-wide powerstate changes. -}
   -> StartupMode
      {- ^
        How to start the runtime, by creating new cluster or joining an
        existing cluster.
      -}
-  -> m (Runtime e o s)
+  -> m (Runtime e)
 forkLegionary
     peerBindAddr
     joinBindAddr
@@ -145,8 +150,8 @@ forkLegionary
 
 
 {- | A handle on the Legion runtime. -}
-data Runtime e o s = Runtime {
-    rChan :: Chan (RuntimeMessage e o s),
+data Runtime e = Runtime {
+    rChan :: Chan (RuntimeMessage e),
     rSelf :: Peer
   }
 
@@ -159,9 +164,9 @@ data Runtime e o s = Runtime {
   the cluster.
 -}
 applyFast :: (MonadIO m)
-  => Runtime e o s {- ^ The runtime handle. -}
+  => Runtime e     {- ^ The runtime handle. -}
   -> e             {- ^ The event to be applied. -}
-  -> m o           {- ^ Returns the possibly inconsistent event output. -}
+  -> m (Output e)  {- ^ Returns the possibly inconsistent event output. -}
 applyFast runtime e = runtimeCall runtime (ApplyFast e)
 
 
@@ -171,16 +176,16 @@ applyFast runtime e = runtimeCall runtime (ApplyFast e)
   the cluster.
 -}
 applyConsistent :: (MonadIO m)
-  => Runtime e o s {- ^ The runtime handle. -}
+  => Runtime e     {- ^ The runtime handle. -}
   -> e             {- ^ The event to be applied. -}
-  -> m o           {- ^ Returns the strongly consistent event output. -}
+  -> m (Output e)  {- ^ Returns the strongly consistent event output. -}
 applyConsistent runtime e = runtimeCall runtime (ApplyConsistent e)
 
 
 {- | Read the current powerstate value. -}
 readState :: (MonadIO m)
-  => Runtime e o s
-  -> m (PowerState ClusterId s Peer e o)
+  => Runtime e
+  -> m (PowerState ClusterId Peer e)
 readState runtime = runtimeCall runtime ReadState
 
 
@@ -188,13 +193,13 @@ readState runtime = runtimeCall runtime ReadState
   Send a user message to some other peer, and block until a response
   is received.
 -}
-call :: (MonadIO m) => Runtime e o s -> Peer -> ByteString -> m ByteString
+call :: (MonadIO m) => Runtime e -> Peer -> ByteString -> m ByteString
 call runtime target msg = runtimeCall runtime (Call target msg)
 
 
 {- | Send the result of a call back to the peer that originated it. -}
 sendCallResponse :: (MonadIO m)
-  => Runtime e o s
+  => Runtime e
   -> Peer
   -> MessageId
   -> ByteString
@@ -204,7 +209,7 @@ sendCallResponse runtime target mid msg =
 
 
 {- | Send a user message to some other peer, without waiting on a response. -}
-cast :: (MonadIO m) => Runtime e o s -> Peer -> ByteString -> m ()
+cast :: (MonadIO m) => Runtime e -> Peer -> ByteString -> m ()
 cast runtime target message = runtimeCast runtime (Cast target message)
 
 
@@ -213,35 +218,35 @@ cast runtime target message = runtimeCast runtime (Cast target message)
   from all of them.
 -}
 broadcall :: (MonadIO m)
-  => Runtime e o s
+  => Runtime e
   -> ByteString
   -> m (Map Peer ByteString)
 broadcall runtime msg = runtimeCall runtime (Broadcall msg)
 
 
 {- | Send a user message to all peers, without wating on a response. -}
-broadcast :: (MonadIO m) => Runtime e o s -> ByteString -> m ()
+broadcast :: (MonadIO m) => Runtime e -> ByteString -> m ()
 broadcast runtime msg = runtimeCast runtime (Broadcast msg)
 
 
 {- | Eject a peer from the cluster. -}
-eject :: (MonadIO m) => Runtime e o s -> Peer -> m ()
+eject :: (MonadIO m) => Runtime e -> Peer -> m ()
 eject runtime peer = runtimeCast runtime (Eject peer)
 
 
 {- | Get the identifier for the local peer. -}
-getSelf :: Runtime e o s -> Peer
+getSelf :: Runtime e -> Peer
 getSelf = rSelf
 
 
 {- | The types of messages that can be sent to the runtime. -}
-data RuntimeMessage e o s
-  = ApplyFast e (Responder o)
-  | ApplyConsistent e (Responder o)
+data RuntimeMessage e
+  = ApplyFast e (Responder (Output e))
+  | ApplyConsistent e (Responder (Output e))
   | Eject Peer
   | Merge (EventPack ClusterId Peer e)
-  | Join JoinRequest (Responder (JoinResponse e o s))
-  | ReadState (Responder (PowerState ClusterId s Peer e o))
+  | Join JoinRequest (Responder (JoinResponse e))
+  | ReadState (Responder (PowerState ClusterId Peer e))
   | Call Peer ByteString (Responder ByteString)
   | Cast Peer ByteString
   | Broadcall ByteString (Responder (Map Peer ByteString))
@@ -308,8 +313,8 @@ respond responder = liftIO . unResponder responder
 
 {- | Send a message to the runtime that blocks on a response. -}
 runtimeCall :: (MonadIO m)
-  => Runtime e o s
-  -> (Responder a -> RuntimeMessage e o s)
+  => Runtime e
+  -> (Responder a -> RuntimeMessage e)
   -> m a
 runtimeCall runtime withResonder = liftIO $ do
   mvar <- newEmptyMVar
@@ -318,7 +323,7 @@ runtimeCall runtime withResonder = liftIO $ do
 
 
 {- | Send a message to the runtime. Do not wait for a result. -}
-runtimeCast :: (MonadIO m) => Runtime e o s -> RuntimeMessage e o s -> m ()
+runtimeCast :: (MonadIO m) => Runtime e -> RuntimeMessage e -> m ()
 runtimeCast runtime = liftIO . writeChan (rChan runtime)
 
 
@@ -328,8 +333,7 @@ runtimeCast runtime = liftIO . writeChan (rChan runtime)
   exception if something goes horribly wrong).
 -}
 executeRuntime :: (
-      Binary e, Binary o, Binary s, Default s, Eq e, Event e o s, ForkM m,
-      MonadCatch m, MonadLoggerIO m, Show e, Show o, Show s
+      Constraints e, ForkM m, MonadCatch m, MonadLoggerIO m
     )
   => Endpoint
      {- ^
@@ -345,10 +349,10 @@ executeRuntime :: (
      {- ^ Handle a user call request.  -}
   -> (ByteString -> IO ())
      {- ^ Handle a user cast message. -}
-  -> (PowerState ClusterId s Peer e o -> IO ())
+  -> (PowerState ClusterId Peer e -> IO ())
      {- ^ Callback when the cluster-wide powerstate changes. -}
-  -> RuntimeState e o s
-  -> Runtime e o s
+  -> RuntimeState e
+  -> Runtime e
     {- ^ A source of requests, together with a way to respond to the requets. -}
   -> m ()
 executeRuntime
@@ -408,11 +412,10 @@ executeRuntime
 
 {- | Execute the incoming messages. -}
 handleRuntimeMessage :: (
-      Binary e, Binary s, Eq e, Event e o s, ForkM m, MonadCatch m,
-      MonadLoggerIO m
+      Constraints e, ForkM m, MonadCatch m, MonadLoggerIO m
     )
-  => RuntimeMessage e o s
-  -> StateT (RuntimeState e o s) m ()
+  => RuntimeMessage e
+  -> StateT (RuntimeState e) m ()
 
 handleRuntimeMessage (ApplyFast e responder) =
   updateCluster $ do
@@ -449,7 +452,7 @@ handleRuntimeMessage (Call target msg responder) = do
   where
     setCallResponder :: (Monad m)
       => MessageId
-      -> StateT (RuntimeState e o s) m ()
+      -> StateT (RuntimeState e) m ()
     setCallResponder mid = do
       state@RuntimeState {calls} <- get
       put state {
@@ -467,7 +470,7 @@ handleRuntimeMessage (Broadcall msg responder) = do
   where
     setBroadcallResponder :: (Monad m)
       => MessageId
-      -> StateT (RuntimeState e o s) m ()
+      -> StateT (RuntimeState e) m ()
     setBroadcallResponder mid = do
       peers <- getPeers
       state@RuntimeState {broadcalls} <- get
@@ -523,12 +526,12 @@ handleRuntimeMessage Resend = propagate Send
 
 
 {- | Get the projected peers. -}
-getPeers :: (Monad m) => StateT (RuntimeState e o s) m (Set Peer)
+getPeers :: (Monad m) => StateT (RuntimeState e) m (Set Peer)
 getPeers = projParticipants . clusterState <$> get
 
 
 {- | Get a new messageId. -}
-newMessageId :: (Monad m) => StateT (RuntimeState e o s) m MessageId
+newMessageId :: (Monad m) => StateT (RuntimeState e) m MessageId
 newMessageId = do
   state@RuntimeState {nextId} <- get
   put state {nextId = nextMessageId nextId}
@@ -540,11 +543,10 @@ newMessageId = do
   IO implied by the cluster update.
 -}
 updateCluster :: (
-      Binary e, Binary s, Eq e, Event e o s, ForkM m, MonadCatch m,
-      MonadLoggerIO m
+      Constraints e, ForkM m, MonadCatch m, MonadLoggerIO m
     )
-  => PowerStateT ClusterId s Peer e o (StateT (RuntimeState e o s) m) a
-  -> StateT (RuntimeState e o s) m a
+  => PowerStateT ClusterId Peer e (StateT (RuntimeState e) m) a
+  -> StateT (RuntimeState e) m a
 updateCluster action = do
   RuntimeState {self} <- get
   updateClusterAs self action
@@ -556,12 +558,11 @@ updateCluster action = do
   may not be able to perform acknowledgements on its own behalf.
 -}
 updateClusterAs :: (
-      Binary e, Binary s, Eq e, Event e o s, ForkM m, MonadCatch m,
-      MonadLoggerIO m
+      Constraints e, ForkM m, MonadCatch m, MonadLoggerIO m
     )
   => Peer
-  -> PowerStateT ClusterId s Peer e o (StateT (RuntimeState e o s) m) a
-  -> StateT (RuntimeState e o s) m a
+  -> PowerStateT ClusterId Peer e (StateT (RuntimeState e) m) a
+  -> StateT (RuntimeState e) m a
 updateClusterAs asPeer action = do
   state@RuntimeState {clusterState} <- get
   runPowerStateT asPeer clusterState (action <* acknowledge) >>=
@@ -575,8 +576,8 @@ updateClusterAs asPeer action = do
 {- | Wait on a consistent response for the given state id. -}
 waitOn :: (Monad m)
   => StateId Peer
-  -> Responder o
-  -> StateT (RuntimeState e o s) m ()
+  -> Responder (Output e)
+  -> StateT (RuntimeState e) m ()
 waitOn sid responder =
   modify (\state@RuntimeState {waiting} -> state {
     waiting = Map.insert sid responder waiting
@@ -584,9 +585,9 @@ waitOn sid responder =
 
 
 {- | Propagates cluster information if necessary. -}
-propagate :: (Binary e, Binary s, ForkM m, MonadCatch m, MonadLoggerIO m)
+propagate :: (Constraints e, ForkM m, MonadCatch m, MonadLoggerIO m)
   => PropAction
-  -> StateT (RuntimeState e o s) m ()
+  -> StateT (RuntimeState e) m ()
 propagate DoNothing = return ()
 propagate Send = do
     RuntimeState {self, clusterState} <- get
@@ -600,7 +601,7 @@ propagate Send = do
       Shut down connections to peers that are no longer participating
       in the cluster.
     -}
-    disconnectObsolete :: (MonadIO m) => StateT (RuntimeState e o s) m ()
+    disconnectObsolete :: (MonadIO m) => StateT (RuntimeState e) m ()
     disconnectObsolete = do
         RuntimeState {clusterState, connections} <- get
         mapM_ disconnect $
@@ -608,10 +609,10 @@ propagate Send = do
 
 
 {- | Send a peer message, creating a new connection if need be. -}
-sendPeer :: (Binary e, Binary s, ForkM m, MonadCatch m, MonadLoggerIO m)
+sendPeer :: (Constraints e, ForkM m, MonadCatch m, MonadLoggerIO m)
   => PeerMessage e
   -> Peer
-  -> StateT (RuntimeState e o s) m ()
+  -> StateT (RuntimeState e) m ()
 sendPeer msg peer = do
   state@RuntimeState {connections} <- get
   case Map.lookup peer connections of
@@ -628,7 +629,7 @@ sendPeer msg peer = do
 
 
 {- | Disconnect the connection to a peer. -}
-disconnect :: (MonadIO m) => Peer -> StateT (RuntimeState e o s) m ()
+disconnect :: (MonadIO m) => Peer -> StateT (RuntimeState e) m ()
 disconnect peer =
   modify (\state@RuntimeState {connections} -> state {
     connections = Map.delete peer connections
@@ -637,10 +638,10 @@ disconnect peer =
 
 {- | Create a connection to a peer. -}
 createConnection :: (
-      Binary e, Binary s, ForkM m, MonadCatch m, MonadLoggerIO m
+      Constraints e, ForkM m, MonadCatch m, MonadLoggerIO m
     )
   => Peer
-  -> m (PeerMessage e -> StateT (RuntimeState e o s) IO ())
+  -> m (PeerMessage e -> StateT (RuntimeState e) IO ())
 createConnection peer = do
     latest <- liftIO $ atomically (newTVar (Just []))
     forkM $ do
@@ -690,14 +691,14 @@ createConnection peer = do
   if such a result is available.
 -}
 respondToWaiting :: (MonadIO m)
-  => Map (StateId Peer) o
-  -> StateT (RuntimeState e o s) m ()
+  => Map (StateId Peer) (Output e)
+  -> StateT (RuntimeState e) m ()
 respondToWaiting available =
     mapM_ respondToOne (Map.toList available)
   where
     respondToOne :: (MonadIO m)
-      => (StateId Peer, o)
-      -> StateT (RuntimeState e o s) m ()
+      => (StateId Peer, Output e)
+      -> StateT (RuntimeState e) m ()
     respondToOne (sid, o) = do
       state@RuntimeState {waiting} <- get
       case Map.lookup sid waiting of
@@ -717,15 +718,12 @@ data StartupMode
 
 
 {- | Initialize the runtime state. -}
-makeRuntimeState :: (
-      Binary e, Binary o, Binary s, Default s, MonadLoggerIO m, Show e,
-      Show o, Show s
-    )
+makeRuntimeState :: (Constraints e, MonadLoggerIO m)
   => Endpoint
-  -> (PowerState ClusterId s Peer e o -> IO ())
+  -> (PowerState ClusterId Peer e -> IO ())
      {- ^ Callback when the cluster-wide powerstate changes. -}
   -> StartupMode
-  -> m (RuntimeState e o s)
+  -> m (RuntimeState e)
 
 makeRuntimeState
     Endpoint {bindAddr}
@@ -771,12 +769,9 @@ makeRuntimeState
         notify
       }
   where
-    requestJoin :: (
-          Binary e, Binary o, Binary s, MonadLoggerIO m, Show e, Show o,
-          Show s
-        )
+    requestJoin :: (Constraints e, MonadLoggerIO m)
       => JoinRequest
-      -> m (JoinResponse e o s)
+      -> m (JoinResponse e)
     requestJoin joinMsg = ($ joinMsg) =<< connectServer addr
 
 
@@ -792,10 +787,11 @@ instance Binary JoinRequest
 
 
 {- | The response to a JoinRequest message -}
-data JoinResponse e o s
-  = JoinOk Peer (PowerState ClusterId s Peer e o)
-  deriving (Show, Generic)
-instance (Binary e, Binary s) => Binary (JoinResponse e o s)
+data JoinResponse e
+  = JoinOk Peer (PowerState ClusterId Peer e)
+  deriving (Generic)
+deriving instance (Constraints e) => Show (JoinResponse e)
+instance (Constraints e) => Binary (JoinResponse e)
 
 
 {- | Message Identifier. -}
@@ -821,5 +817,11 @@ newSequence = do
 -}
 nextMessageId :: MessageId -> MessageId
 nextMessageId (M sequenceId ord) = M sequenceId (ord + 1)
+
+
+type Constraints e = (
+    Binary (State e), Binary e, Default (State e), Eq e, Event e, Show e,
+    ToJSON (State e), ToJSON e
+  )
 
 
