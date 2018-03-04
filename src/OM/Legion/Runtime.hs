@@ -58,7 +58,8 @@ import GHC.Generics (Generic)
 import OM.Fork (ForkM, forkC, forkM)
 import OM.Legion.Conduit (chanToSource, chanToSink)
 import OM.Legion.UUID (getUUID)
-import OM.PowerState (PowerState, Event, StateId, projParticipants)
+import OM.PowerState (PowerState, Event, StateId, projParticipants,
+   EventPack, events)
 import OM.PowerState.Monad (PropAction(DoNothing, Send), event,
    acknowledge, runPowerStateT, merge, PowerStateT, disassociate,
    participate)
@@ -80,7 +81,7 @@ data RuntimeState e o s = RuntimeState {
     clusterState :: PowerState ClusterId s Peer e o,
      connections :: Map
                       Peer
-                      (PeerMessage e o s -> StateT (RuntimeState e o s) IO ()),
+                      (PeerMessage e -> StateT (RuntimeState e o s) IO ()),
          waiting :: Map (StateId Peer) (Responder o),
            calls :: Map MessageId (Responder ByteString),
       broadcalls :: Map
@@ -238,7 +239,7 @@ data RuntimeMessage e o s
   = ApplyFast e (Responder o)
   | ApplyConsistent e (Responder o)
   | Eject Peer
-  | Merge (PowerState ClusterId s Peer e o)
+  | Merge (EventPack ClusterId Peer e)
   | Join JoinRequest (Responder (JoinResponse e o s))
   | ReadState (Responder (PowerState ClusterId s Peer e o))
   | Call Peer ByteString (Responder ByteString)
@@ -251,8 +252,8 @@ data RuntimeMessage e o s
 
 
 {- | The types of messages that can be sent from one peer to another. -}
-data PeerMessage e o s
-  = PMMerge (PowerState ClusterId s Peer e o)
+data PeerMessage e
+  = PMMerge (EventPack ClusterId Peer e)
     {- ^ Send a powerstate merge. -}
   | PMCall Peer MessageId ByteString
     {- ^ Send a user call message from one peer to another. -}
@@ -262,7 +263,7 @@ data PeerMessage e o s
     {- ^ Send a response to a user call message. -}
 
   deriving (Generic)
-instance (Binary e, Binary s) => Binary (PeerMessage e o s)
+instance (Binary e) => Binary (PeerMessage e)
 
 
 {- | An opaque value that identifies a cluster participant. -}
@@ -581,7 +582,7 @@ propagate :: (Binary e, Binary s, ForkM m, MonadCatch m, MonadLoggerIO m)
 propagate DoNothing = return ()
 propagate Send = do
     RuntimeState {self, clusterState} <- get
-    mapM_ (sendPeer (PMMerge clusterState))
+    mapM_ (sendPeer (PMMerge (events clusterState)))
       . Set.delete self
       . PS.allParticipants
       $ clusterState
@@ -600,7 +601,7 @@ propagate Send = do
 
 {- | Send a peer message, creating a new connection if need be. -}
 sendPeer :: (Binary e, Binary s, ForkM m, MonadCatch m, MonadLoggerIO m)
-  => PeerMessage e o s
+  => PeerMessage e
   -> Peer
   -> StateT (RuntimeState e o s) m ()
 sendPeer msg peer = do
@@ -631,7 +632,7 @@ createConnection :: (
       Binary e, Binary s, ForkM m, MonadCatch m, MonadLoggerIO m
     )
   => Peer
-  -> m (PeerMessage e o s -> StateT (RuntimeState e o s) IO ())
+  -> m (PeerMessage e -> StateT (RuntimeState e o s) IO ())
 createConnection peer = do
     latest <- liftIO $ atomically (newTVar (Just []))
     forkM $ do
@@ -659,8 +660,8 @@ createConnection peer = do
       )
   where
     latestSource :: (MonadIO m)
-      => TVar (Maybe [PeerMessage e o s])
-      -> Source m (PeerMessage e o s)
+      => TVar (Maybe [PeerMessage e])
+      -> Source m (PeerMessage e)
     latestSource latest =
       (liftIO . atomically) (
         readTVar latest >>= \case
