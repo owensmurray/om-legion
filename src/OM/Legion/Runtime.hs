@@ -4,6 +4,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE ViewPatterns #-}
 
 {- | The meat of the Legion runtime implementation. -}
 module OM.Legion.Runtime (
@@ -61,10 +62,14 @@ import OM.PowerState.Monad (PropAction(DoNothing, Send), event,
    acknowledge, runPowerStateT, merge, PowerStateT, disassociate,
    participate)
 import OM.Show (showt)
-import OM.Socket (connectServer, bindAddr, AddressDescription, openEgress,
-   Endpoint(Endpoint), openIngress, openServer)
+import OM.Socket (connectServer, bindAddr,
+   AddressDescription(AddressDescription), openEgress, Endpoint(Endpoint),
+   openIngress, openServer)
+import Web.HttpApiData (FromHttpApiData, parseUrlPiece)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
+import qualified Data.Text as T
+import qualified Data.UUID as UUID
 import qualified OM.PowerState as PS
 
 
@@ -270,6 +275,12 @@ instance ToJSONKey Peer where
 instance ToJSON Peer where
   toJSON = toJSON . show
 instance Binary Peer
+instance FromHttpApiData Peer where
+  parseUrlPiece str =
+    case T.span (/= ':') str of
+      (UUID.fromText -> Just uuid, T.span (== ':') -> (_, addr)) ->
+        Right (Peer uuid (AddressDescription addr))
+      _ -> Left $ "Can't parse peer: " <> showt str
 
 
 {- | An opaque value that identifies a cluster. -}
