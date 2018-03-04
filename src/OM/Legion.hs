@@ -8,6 +8,7 @@ module OM.Legion (
   -- * Applying state changes.
   applyFast,
   applyConsistent,
+  eject,
 
   -- * Sending messages around the cluster.
   cast,
@@ -28,6 +29,6 @@ module OM.Legion (
 
 import OM.Legion.Runtime (forkLegionary, StartupMode(NewCluster,
    JoinCluster), Runtime, applyFast, applyConsistent, readState,
-   ClusterId, Peer, call, cast, broadcall, broadcast, getSelf)
+   ClusterId, Peer, call, cast, broadcall, broadcast, getSelf, eject)
 
 
