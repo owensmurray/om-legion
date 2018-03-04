@@ -415,7 +415,7 @@ handleRuntimeMessage (ApplyConsistent e responder) =
     lift (waitOn sid responder)
 
 handleRuntimeMessage (Eject peer) =
-  updateCluster $ disassociate peer
+  updateClusterAs peer $ disassociate peer
 
 handleRuntimeMessage (Merge other) =
   updateCluster $
@@ -534,8 +534,25 @@ updateCluster :: (
   => PowerStateT ClusterId s Peer e o (StateT (RuntimeState e o s) m) a
   -> StateT (RuntimeState e o s) m a
 updateCluster action = do
-  state@RuntimeState {self, clusterState} <- get
-  runPowerStateT self clusterState (action <* acknowledge) >>=
+  RuntimeState {self} <- get
+  updateClusterAs self action
+
+
+{- |
+  Like 'updateCluster', but perform the operation on behalf of a specified
+  peer. This is required for e.g. the peer eject case, when the ejected peer
+  may not be able to perform acknowledgements on its own behalf.
+-}
+updateClusterAs :: (
+      Binary e, Binary s, Eq e, Event e o s, ForkM m, MonadCatch m,
+      MonadLoggerIO m
+    )
+  => Peer
+  -> PowerStateT ClusterId s Peer e o (StateT (RuntimeState e o s) m) a
+  -> StateT (RuntimeState e o s) m a
+updateClusterAs asPeer action = do
+  state@RuntimeState {clusterState} <- get
+  runPowerStateT asPeer clusterState (action <* acknowledge) >>=
     \(v, propAction, newClusterState, infs) -> do
       put state {clusterState = newClusterState}
       respondToWaiting infs
