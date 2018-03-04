@@ -31,11 +31,11 @@ module OM.Legion.Runtime (
 
 
 import Control.Concurrent (Chan, newEmptyMVar, putMVar, takeMVar,
-   writeChan, newChan)
+   writeChan, newChan, threadDelay)
 import Control.Concurrent.STM (TVar, atomically, newTVar, writeTVar,
    readTVar, retry)
 import Control.Exception.Safe (MonadCatch, tryAny)
-import Control.Monad (void, when, join)
+import Control.Monad (void, when, join, forever)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Logger (MonadLoggerIO, logDebug, logInfo, logWarn,
    logError)
@@ -248,6 +248,7 @@ data RuntimeMessage e o s
   | Broadcast ByteString
   | SendCallResponse Peer MessageId ByteString
   | HandleCallResponse Peer MessageId ByteString
+  | Resend
   deriving (Show)
 
 
@@ -362,6 +363,7 @@ executeRuntime
     {- Start the various messages sources. -}
     startPeerListener
     startJoinListener
+    startPeriodicResend
 
     void . (`runStateT` rts) . runConduit $
       chanToSource (rChan runtime)
@@ -398,6 +400,10 @@ executeRuntime
             runtimeCall runtime (Join req) >>= respond_
           )
       )
+    startPeriodicResend :: (ForkM m, MonadCatch m, MonadLoggerIO m) => m ()
+    startPeriodicResend = forkC "state resend" . forever $ do
+      liftIO $ threadDelay 5000000
+      runtimeCast runtime Resend
 
 
 {- | Execute the incoming messages. -}
@@ -512,6 +518,8 @@ handleRuntimeMessage (HandleCallResponse source mid msg) = do
     Just responder -> do
       respond responder msg
       put state {calls = Map.delete mid calls}
+
+handleRuntimeMessage Resend = propagate Send
 
 
 {- | Get the projected peers. -}
