@@ -101,9 +101,8 @@ data RuntimeState e = RuntimeState {
 
 {- | Fork the Legion runtime system. -}
 forkLegionary :: (
-      Binary (State e), Binary e, Default (State e), Eq e, Event e,
-      Show e, ToJSON (State e), ToJSON e, ForkM m, MonadCatch m,
-      MonadLoggerIO m
+      Binary (State e), Binary e, Default (State e), Eq e, Event e, ForkM m,
+      MonadCatch m, MonadLoggerIO m, Show e, ToJSON (State e), ToJSON e
     )
   => Endpoint
      {- ^
@@ -397,13 +396,14 @@ executeRuntime
       )
 
     startJoinListener :: (ForkM m, MonadCatch m, MonadLoggerIO m) => m ()
-    startJoinListener = forkC "join listener" $
-      runConduit (
-        openServer joinBindAddr
-        .| awaitForever (\(req, respond_) -> lift $
-            runtimeCall runtime (Join req) >>= respond_
-          )
-      )
+    startJoinListener =
+      forkC "join listener" $
+        runConduit (
+          openServer joinBindAddr
+          .| awaitForever (\(req, respond_) -> lift $
+              runtimeCall runtime (Join req) >>= respond_
+            )
+        )
     startPeriodicResend :: (ForkM m, MonadCatch m, MonadLoggerIO m) => m ()
     startPeriodicResend = forkC "state resend" . forever $ do
       liftIO $ threadDelay 5000000
