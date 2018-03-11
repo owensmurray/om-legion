@@ -5,7 +5,7 @@ packages:
 extra-deps:
 - legion-discovery-client-0.3.0.0
 - load-balancing-1.0.1.1
-- om-fork-0.1.1.0
+- om-fork-0.2.0.0
 - om-json-0.2.2.0
 - om-lift-0.1.0.0
 - om-powerstate-1.0.0.0
