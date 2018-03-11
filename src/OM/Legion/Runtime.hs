@@ -39,7 +39,7 @@ import Control.Concurrent (Chan, newEmptyMVar, putMVar, takeMVar,
 import Control.Concurrent.STM (TVar, atomically, newTVar, writeTVar,
    readTVar, retry)
 import Control.Exception.Safe (MonadCatch, tryAny)
-import Control.Monad (void, when, join, forever)
+import Control.Monad (void, when, join)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Logger (MonadLoggerIO, logDebug, logInfo, logWarn,
    logError, askLoggerIO, runLoggingT)
@@ -407,9 +407,15 @@ executeRuntime
             )
         )
     startPeriodicResend :: (MonadCatch m, MonadLoggerIO m) => m ()
-    startPeriodicResend = forkC "state resend" . forever $ do
-      liftIO $ threadDelay 5000000
-      runtimeCast runtime Resend
+    startPeriodicResend = forkC "state resend" $
+      let
+        periodicResend :: IO ()
+        periodicResend = do
+          threadDelay 5000000
+          runtimeCast runtime Resend
+          periodicResend
+      in
+        periodicResend
 
 
 {- | Execute the incoming messages. -}
