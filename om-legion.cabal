@@ -36,7 +36,7 @@ library
     http-api-data      >= 0.3.7.1  && < 0.4,
     mmorph             >= 1.1.0    && < 1.2,
     monad-logger       >= 0.3.25.1 && < 0.4,
-    om-fork            >= 0.1.0.0  && < 0.2,
+    om-fork            >= 0.2.0.0  && < 0.3,
     om-powerstate      >= 1.0.0.0  && < 1.1,
     om-show            >= 0.1.0.0  && < 0.2,
     om-socket          >= 0.5.0.0  && < 0.6,

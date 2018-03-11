@@ -35,14 +35,14 @@ module OM.Legion.Runtime (
 
 
 import Control.Concurrent (Chan, newEmptyMVar, putMVar, takeMVar,
-   writeChan, newChan, threadDelay)
+   writeChan, newChan, threadDelay, forkIO)
 import Control.Concurrent.STM (TVar, atomically, newTVar, writeTVar,
    readTVar, retry)
 import Control.Exception.Safe (MonadCatch, tryAny)
 import Control.Monad (void, when, join, forever)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Logger (MonadLoggerIO, logDebug, logInfo, logWarn,
-   logError)
+   logError, askLoggerIO, runLoggingT)
 import Control.Monad.Morph (hoist)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (runExceptT)
@@ -59,7 +59,7 @@ import Data.Monoid ((<>))
 import Data.Set (Set, (\\))
 import Data.UUID (UUID)
 import GHC.Generics (Generic)
-import OM.Fork (ForkM, forkC, forkM)
+import OM.Fork (forkC)
 import OM.Legion.Conduit (chanToSource, chanToSink)
 import OM.Legion.UUID (getUUID)
 import OM.PowerState (PowerState, Event, StateId, projParticipants,
@@ -101,7 +101,7 @@ data RuntimeState e = RuntimeState {
 
 {- | Fork the Legion runtime system. -}
 forkLegionary :: (
-      Binary (State e), Binary e, Default (State e), Eq e, Event e, ForkM m,
+      Binary (State e), Binary e, Default (State e), Eq e, Event e,
       MonadCatch m, MonadLoggerIO m, Show e, ToJSON (State e), ToJSON e
     )
   => Endpoint
@@ -136,7 +136,8 @@ forkLegionary
   = do
     rts <- makeRuntimeState peerBindAddr notify startupMode
     runtime <- Runtime <$> liftIO newChan <*> pure (self rts)
-    forkC "main legion thread" $
+    logging <- askLoggerIO
+    forkC "main legion thread" . (`runLoggingT` logging) $
       executeRuntime
         peerBindAddr
         joinBindAddr
@@ -332,7 +333,7 @@ runtimeCast runtime = liftIO . writeChan (rChan runtime)
   exception if something goes horribly wrong).
 -}
 executeRuntime :: (
-      Constraints e, ForkM m, MonadCatch m, MonadLoggerIO m
+      Constraints e, MonadCatch m, MonadLoggerIO m
     )
   => Endpoint
      {- ^
@@ -379,32 +380,33 @@ executeRuntime
             when (state /= newState) (liftIO (notify newState))
         )
   where
-    startPeerListener :: (ForkM m, MonadCatch m, MonadLoggerIO m) => m ()
+    startPeerListener :: (MonadCatch m, MonadLoggerIO m) => m ()
     startPeerListener = forkC "peer listener" $ 
       runConduit (
         openIngress peerBindAddr
         .| awaitForever (\case
              PMMerge ps -> yield (Merge ps)
-             PMCall source mid msg -> liftIO . forkM $
+             PMCall source mid msg -> liftIO $
                sendCallResponse runtime source mid
                =<< handleUserCall msg
-             PMCast msg -> (liftIO . forkM) (handleUserCast msg)
+             PMCast msg -> liftIO (handleUserCast msg)
              PMCallResponse source mid msg ->
                yield (HandleCallResponse source mid msg)
            )
         .| chanToSink (rChan runtime)
       )
 
-    startJoinListener :: (ForkM m, MonadCatch m, MonadLoggerIO m) => m ()
-    startJoinListener =
-      forkC "join listener" $
+    startJoinListener :: (MonadCatch m, MonadLoggerIO m) => m ()
+    startJoinListener = do
+      logging <- askLoggerIO
+      forkC "join listener" . (`runLoggingT` logging) $
         runConduit (
           openServer joinBindAddr
           .| awaitForever (\(req, respond_) -> lift $
               runtimeCall runtime (Join req) >>= respond_
             )
         )
-    startPeriodicResend :: (ForkM m, MonadCatch m, MonadLoggerIO m) => m ()
+    startPeriodicResend :: (MonadCatch m, MonadLoggerIO m) => m ()
     startPeriodicResend = forkC "state resend" . forever $ do
       liftIO $ threadDelay 5000000
       runtimeCast runtime Resend
@@ -412,7 +414,7 @@ executeRuntime
 
 {- | Execute the incoming messages. -}
 handleRuntimeMessage :: (
-      Constraints e, ForkM m, MonadCatch m, MonadLoggerIO m
+      Constraints e, MonadCatch m, MonadLoggerIO m
     )
   => RuntimeMessage e
   -> StateT (RuntimeState e) m ()
@@ -543,7 +545,7 @@ newMessageId = do
   IO implied by the cluster update.
 -}
 updateCluster :: (
-      Constraints e, ForkM m, MonadCatch m, MonadLoggerIO m
+      Constraints e, MonadCatch m, MonadLoggerIO m
     )
   => PowerStateT ClusterId Peer e (StateT (RuntimeState e) m) a
   -> StateT (RuntimeState e) m a
@@ -558,7 +560,7 @@ updateCluster action = do
   may not be able to perform acknowledgements on its own behalf.
 -}
 updateClusterAs :: (
-      Constraints e, ForkM m, MonadCatch m, MonadLoggerIO m
+      Constraints e, MonadCatch m, MonadLoggerIO m
     )
   => Peer
   -> PowerStateT ClusterId Peer e (StateT (RuntimeState e) m) a
@@ -585,7 +587,7 @@ waitOn sid responder =
 
 
 {- | Propagates cluster information if necessary. -}
-propagate :: (Constraints e, ForkM m, MonadCatch m, MonadLoggerIO m)
+propagate :: (Constraints e, MonadCatch m, MonadLoggerIO m)
   => PropAction
   -> StateT (RuntimeState e) m ()
 propagate DoNothing = return ()
@@ -609,7 +611,7 @@ propagate Send = do
 
 
 {- | Send a peer message, creating a new connection if need be. -}
-sendPeer :: (Constraints e, ForkM m, MonadCatch m, MonadLoggerIO m)
+sendPeer :: (Constraints e, MonadCatch m, MonadLoggerIO m)
   => PeerMessage e
   -> Peer
   -> StateT (RuntimeState e) m ()
@@ -638,19 +640,21 @@ disconnect peer =
 
 {- | Create a connection to a peer. -}
 createConnection :: (
-      Constraints e, ForkM m, MonadCatch m, MonadLoggerIO m
+      Constraints e, MonadCatch m, MonadLoggerIO m
     )
   => Peer
   -> m (PeerMessage e -> StateT (RuntimeState e) IO ())
 createConnection peer = do
     latest <- liftIO $ atomically (newTVar (Just []))
-    forkM $ do
+    logging <- askLoggerIO
+    void . liftIO . forkIO . (`runLoggingT` logging) $ do
       (tryAny . runConduit) (
           latestSource latest .| openEgress (peerAddy peer)
         ) >>= \case
           Left err -> $(logWarn) $ "Connection crashed: " <> showt (peer, err)
           Right () -> $(logWarn) "Connection closed for no reason."
       liftIO $ atomically (writeTVar latest Nothing)
+      
     return (\msg ->
         join . liftIO . atomically $
           readTVar latest >>= \case
