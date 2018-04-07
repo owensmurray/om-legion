@@ -28,7 +28,7 @@ module OM.Legion (
 
 
 import OM.Legion.Runtime (forkLegionary, StartupMode(NewCluster,
-   JoinCluster), Runtime, applyFast, applyConsistent, readState,
+   JoinCluster, Recover), Runtime, applyFast, applyConsistent, readState,
    ClusterId, Peer, call, cast, broadcall, broadcast, getSelf, eject)
 
 

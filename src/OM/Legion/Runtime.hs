@@ -39,7 +39,7 @@ import Control.Concurrent (Chan, newEmptyMVar, putMVar, takeMVar,
 import Control.Concurrent.STM (TVar, atomically, newTVar, writeTVar,
    readTVar, retry)
 import Control.Exception.Safe (MonadCatch, tryAny)
-import Control.Monad (void, when, join)
+import Control.Monad (void, join)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Logger (MonadLoggerIO, logDebug, logInfo, logWarn,
    logError, askLoggerIO, runLoggingT)
@@ -118,9 +118,9 @@ forkLegionary :: (
      {- ^ Handle a user call request.  -}
   -> (ByteString -> IO ())
      {- ^ Handle a user cast message. -}
-  -> (PowerState ClusterId Peer e -> IO ())
+  -> (Peer -> PowerState ClusterId Peer e -> IO ())
      {- ^ Callback when the cluster-wide powerstate changes. -}
-  -> StartupMode
+  -> StartupMode e
      {- ^
        How to start the runtime, by creating new cluster or joining an
        existing cluster.
@@ -139,11 +139,9 @@ forkLegionary
     logging <- askLoggerIO
     forkC "main legion thread" . (`runLoggingT` logging) $
       executeRuntime
-        peerBindAddr
         joinBindAddr
         handleUserCall
         handleUserCast
-        notify
         rts
         runtime
     return runtime
@@ -337,11 +335,6 @@ executeRuntime :: (
     )
   => Endpoint
      {- ^
-       The address on which the legion framework will listen for
-       rebalancing and cluster management commands.
-     -}
-  -> Endpoint
-     {- ^
        The address on which the legion framework will listen for cluster
        join requests.
      -}
@@ -349,18 +342,14 @@ executeRuntime :: (
      {- ^ Handle a user call request.  -}
   -> (ByteString -> IO ())
      {- ^ Handle a user cast message. -}
-  -> (PowerState ClusterId Peer e -> IO ())
-     {- ^ Callback when the cluster-wide powerstate changes. -}
   -> RuntimeState e
   -> Runtime e
     {- ^ A source of requests, together with a way to respond to the requets. -}
   -> m ()
 executeRuntime
-    peerBindAddr
     joinBindAddr
     handleUserCall
     handleUserCast
-    notify
     rts
     runtime
   = do
@@ -373,17 +362,13 @@ executeRuntime
       chanToSource (rChan runtime)
       .| awaitForever (\msg -> do
           $(logDebug) $ "Receieved: " <> showt msg
-          lift $ do
-            state <- clusterState <$> get
-            handleRuntimeMessage msg
-            newState <- clusterState <$> get
-            when (state /= newState) (liftIO (notify newState))
+          lift $ handleRuntimeMessage msg
         )
   where
     startPeerListener :: (MonadCatch m, MonadLoggerIO m) => m ()
     startPeerListener = forkC "peer listener" $ 
       runConduit (
-        openIngress peerBindAddr
+        openIngress (Endpoint (peerAddy (self rts)) Nothing)
         .| awaitForever (\case
              PMMerge ps -> yield (Merge ps)
              PMCall source mid msg -> liftIO $
@@ -575,6 +560,7 @@ updateClusterAs asPeer action = do
   state@RuntimeState {clusterState} <- get
   runPowerStateT asPeer clusterState (action <* acknowledge) >>=
     \(v, propAction, newClusterState, infs) -> do
+      liftIO . ($ newClusterState) . notify =<< get
       put state {clusterState = newClusterState}
       respondToWaiting infs
       propagate propAction
@@ -719,41 +705,35 @@ respondToWaiting available =
 
 
 {- | This defines the various ways a node can be spun up. -}
-data StartupMode
+data StartupMode e
   = NewCluster
     {- ^ Indicates that we should bootstrap a new cluster at startup. -}
   | JoinCluster AddressDescription
     {- ^ Indicates that the node should try to join an existing cluster. -}
-  deriving (Show)
+  | Recover Peer (PowerState ClusterId Peer e)
+deriving instance (ToJSON e, ToJSON (State e)) => Show (StartupMode e)
 
 
 {- | Initialize the runtime state. -}
 makeRuntimeState :: (Constraints e, MonadLoggerIO m)
   => Endpoint
-  -> (PowerState ClusterId Peer e -> IO ())
+  -> (Peer -> PowerState ClusterId Peer e -> IO ())
      {- ^ Callback when the cluster-wide powerstate changes. -}
-  -> StartupMode
+  -> StartupMode e
   -> m (RuntimeState e)
 
 makeRuntimeState
-    Endpoint {bindAddr}
+    peerBindAddr
     notify
     NewCluster
   = do
     {- Build a brand new node state, for the first node in a cluster. -}
-    self <- newPeer bindAddr
+    self <- newPeer (bindAddr peerBindAddr)
     clusterId <- ClusterId <$> getUUID
-    nextId <- newSequence
-    return RuntimeState {
-        self,
-        clusterState = PS.new clusterId (Set.singleton self),
-        connections = mempty,
-        waiting = mempty,
-        calls = mempty,
-        broadcalls = mempty,
-        nextId,
-        notify
-      }
+    makeRuntimeState
+      peerBindAddr
+      notify
+      (Recover self (PS.new clusterId (Set.singleton self)))
 
 makeRuntimeState
     peerBindAddr
@@ -767,22 +747,29 @@ makeRuntimeState
       . JoinRequest
       . bindAddr
       $ peerBindAddr
-    nextId <- newSequence
-    return RuntimeState {
-        self,
-        clusterState = cluster,
-        connections = mempty,
-        waiting = mempty,
-        calls = mempty,
-        broadcalls = mempty,
-        nextId,
-        notify
-      }
+    makeRuntimeState peerBindAddr notify (Recover self cluster)
   where
     requestJoin :: (Constraints e, MonadLoggerIO m)
       => JoinRequest
       -> m (JoinResponse e)
     requestJoin joinMsg = ($ joinMsg) =<< connectServer addr
+
+makeRuntimeState
+    _peerBindAddr
+    notify
+    (Recover self clusterState)
+  = do
+    nextId <- newSequence
+    return RuntimeState {
+        self,
+        clusterState,
+        connections = mempty,
+        waiting = mempty,
+        calls = mempty,
+        broadcalls = mempty,
+        nextId,
+        notify = notify self
+      }
 
 
 {- | Make a new peer. -}
