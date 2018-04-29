@@ -631,9 +631,7 @@ disconnect peer =
 
 
 {- | Create a connection to a peer. -}
-createConnection :: (
-      Constraints e, MonadCatch m, MonadLoggerIO m
-    )
+createConnection :: (Constraints e, MonadCatch m, MonadLoggerIO m)
   => Peer
   -> m (PeerMessage e -> StateT (RuntimeState e) IO ())
 createConnection peer = do
