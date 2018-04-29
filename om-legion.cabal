@@ -40,6 +40,7 @@ library
     om-powerstate      >= 1.0.0.0  && < 1.1,
     om-show            >= 0.1.0.0  && < 0.2,
     om-socket          >= 0.5.0.0  && < 0.6,
+    random-shuffle     >= 0.0.4    && < 0.1,
     safe-exceptions    >= 0.1.6.0  && < 0.2,
     stm                >= 2.4.4.1  && < 2.5,
     text               >= 1.2.2.2  && < 1.3,
