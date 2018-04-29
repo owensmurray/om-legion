@@ -64,13 +64,13 @@ import OM.Legion.Conduit (chanToSource, chanToSink)
 import OM.Legion.UUID (getUUID)
 import OM.PowerState (PowerState, Event, StateId, projParticipants,
    EventPack, events, Output, State)
-import OM.PowerState.Monad (PropAction(DoNothing, Send), event,
-   acknowledge, runPowerStateT, merge, PowerStateT, disassociate,
-   participate)
+import OM.PowerState.Monad (event, acknowledge, runPowerStateT, merge,
+   PowerStateT, disassociate, participate)
 import OM.Show (showt)
 import OM.Socket (connectServer, bindAddr,
    AddressDescription(AddressDescription), openEgress, Endpoint(Endpoint),
    openIngress, openServer)
+import System.Random.Shuffle (shuffleM)
 import Web.HttpApiData (FromHttpApiData, parseUrlPiece)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
@@ -251,7 +251,7 @@ data RuntimeMessage e
   | Broadcast ByteString
   | SendCallResponse Peer MessageId ByteString
   | HandleCallResponse Peer MessageId ByteString
-  | Resend
+  | Resend (Responder ())
   deriving (Show)
 
 
@@ -396,8 +396,8 @@ executeRuntime
       let
         periodicResend :: IO ()
         periodicResend = do
-          threadDelay 5000000
-          runtimeCast runtime Resend
+          threadDelay 10000
+          runtimeCall runtime Resend
           periodicResend
       in
         periodicResend
@@ -515,7 +515,8 @@ handleRuntimeMessage (HandleCallResponse source mid msg) = do
       respond responder msg
       put state {calls = Map.delete mid calls}
 
-handleRuntimeMessage Resend = propagate Send
+handleRuntimeMessage (Resend responder) =
+  propagate >>= respond responder
 
 
 {- | Get the projected peers. -}
@@ -559,11 +560,10 @@ updateClusterAs :: (
 updateClusterAs asPeer action = do
   state@RuntimeState {clusterState} <- get
   runPowerStateT asPeer clusterState (action <* acknowledge) >>=
-    \(v, propAction, newClusterState, infs) -> do
+    \(v, _propAction, newClusterState, infs) -> do
       liftIO . ($ newClusterState) . notify =<< get
       put state {clusterState = newClusterState}
       respondToWaiting infs
-      propagate propAction
       return v
 
 
@@ -580,15 +580,16 @@ waitOn sid responder =
 
 {- | Propagates cluster information if necessary. -}
 propagate :: (Constraints e, MonadCatch m, MonadLoggerIO m)
-  => PropAction
-  -> StateT (RuntimeState e) m ()
-propagate DoNothing = return ()
-propagate Send = do
+  => StateT (RuntimeState e) m ()
+propagate = do
     RuntimeState {self, clusterState} <- get
-    mapM_ (sendPeer (PMMerge (events clusterState)))
-      . Set.delete self
-      . PS.allParticipants
-      $ clusterState
+    let
+      targets = Set.delete self $
+        PS.allParticipants clusterState
+
+    liftIO (shuffleM (Set.toList targets)) >>= \case
+      [] -> return ()
+      target:_ -> sendPeer (PMMerge (events clusterState)) target
     disconnectObsolete
   where
     {- |
@@ -631,9 +632,7 @@ disconnect peer =
 
 
 {- | Create a connection to a peer. -}
-createConnection :: (
-      Constraints e, MonadCatch m, MonadLoggerIO m
-    )
+createConnection :: (Constraints e, MonadCatch m, MonadLoggerIO m)
   => Peer
   -> m (PeerMessage e -> StateT (RuntimeState e) IO ())
 createConnection peer = do
