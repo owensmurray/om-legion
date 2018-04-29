@@ -1,6 +1,5 @@
-{- |
-  This module contains some handy conduit abstractions.
--}
+{-# OPTIONS_GHC -Wno-deprecations #-}
+{- | This module contains some handy conduit abstractions. -}
 module OM.Legion.Conduit (
   chanToSource,
   chanToSink,
