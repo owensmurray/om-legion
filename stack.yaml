@@ -3,12 +3,12 @@ extra-package-dbs: []
 packages:
 - .
 extra-deps:
-- legion-discovery-client-0.3.0.0
+- legion-discovery-client-0.3.1.0
 - load-balancing-1.0.1.1
 - om-fork-0.2.0.0
 - om-json-0.2.2.0
 - om-lift-0.1.0.0
 - om-powerstate-1.0.0.0
 - om-show-0.1.0.1
-- om-socket-0.5.0.2
-resolver: lts-10.3
+- om-socket-0.6.0.0
+resolver: lts-11.6
