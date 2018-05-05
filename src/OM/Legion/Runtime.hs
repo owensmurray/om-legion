@@ -1,4 +1,3 @@
-{-# OPTIONS_GHC -Wno-deprecations #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -8,8 +7,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# OPTIONS_GHC -Wno-deprecations #-}
 
 {- | The meat of the Legion runtime implementation. -}
 module OM.Legion.Runtime (
@@ -28,6 +29,7 @@ module OM.Legion.Runtime (
   broadcast,
   eject,
   getSelf,
+  getAsync,
 
   -- * Other types
   ClusterId,
@@ -35,19 +37,20 @@ module OM.Legion.Runtime (
 ) where
 
 
-import Control.Concurrent (Chan, newEmptyMVar, putMVar, takeMVar,
-   writeChan, newChan, threadDelay, forkIO)
+import Control.Concurrent (Chan, writeChan, newChan, threadDelay,
+   readChan)
+import Control.Concurrent.Async (Async, async, race_)
 import Control.Concurrent.STM (TVar, atomically, newTVar, writeTVar,
    readTVar, retry)
-import Control.Exception.Safe (MonadCatch, tryAny)
+import Control.Exception.Safe (MonadCatch, tryAny, finally)
 import Control.Monad (void, join)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Logger (MonadLoggerIO, logDebug, logInfo, logWarn,
-   logError, askLoggerIO, runLoggingT)
+   logError, askLoggerIO, runLoggingT, LoggingT)
 import Control.Monad.Morph (hoist)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (runExceptT)
-import Control.Monad.Trans.State (runStateT, StateT, get, put, modify)
+import Control.Monad.Trans.State (evalStateT, StateT, get, put, modify)
 import Data.Aeson (ToJSON, toJSON, ToJSONKey, toJSONKey,
    ToJSONKeyFunction(ToJSONKeyText))
 import Data.Aeson.Encoding (text)
@@ -59,9 +62,10 @@ import Data.Map (Map)
 import Data.Monoid ((<>))
 import Data.Set (Set, (\\))
 import Data.UUID (UUID)
+import Data.Void (Void)
 import GHC.Generics (Generic)
-import OM.Fork (forkC)
-import OM.Legion.Conduit (chanToSource, chanToSink)
+import OM.Fork (Actor, actorChan, Msg, Responder, respond)
+import OM.Legion.Conduit (chanToSink)
 import OM.Legion.UUID (getUUID)
 import OM.PowerState (PowerState, Event, StateId, projParticipants,
    EventPack, events, Output, State)
@@ -77,6 +81,7 @@ import qualified Data.Map as Map
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Data.UUID as UUID
+import qualified OM.Fork as Fork
 import qualified OM.PowerState as PS
 
 
@@ -136,23 +141,36 @@ forkLegionary
     startupMode
   = do
     rts <- makeRuntimeState peerBindAddr notify startupMode
-    runtime <- Runtime <$> liftIO newChan <*> pure (self rts)
+    runtimeChan <- RChan <$> liftIO newChan
     logging <- askLoggerIO
-    forkC "main legion thread" . (`runLoggingT` logging) $
+    asyncHandle <- liftIO . async . (`runLoggingT` logging) $
       executeRuntime
         joinBindAddr
         handleUserCall
         handleUserCast
         rts
-        runtime
-    return runtime
+        runtimeChan
+    return (Runtime runtimeChan (self rts) asyncHandle)
 
 
 {- | A handle on the Legion runtime. -}
 data Runtime e = Runtime {
-    rChan :: Chan (RuntimeMessage e),
-    rSelf :: Peer
+     rChan :: RChan e,
+     rSelf :: Peer,
+    rAsync :: Async Void
   }
+instance Actor (Runtime e) where
+  type Msg (Runtime e) = RuntimeMessage e
+  actorChan = actorChan . rChan
+
+
+{- | The type of the runtime message channel. -}
+newtype RChan e = RChan {
+    unRChan :: Chan (RuntimeMessage e)
+  }
+instance Actor (RChan e) where
+  type Msg (RChan e) = RuntimeMessage e
+  actorChan = writeChan . unRChan
 
 
 {- |
@@ -166,7 +184,7 @@ applyFast :: (MonadIO m)
   => Runtime e     {- ^ The runtime handle. -}
   -> e             {- ^ The event to be applied. -}
   -> m (Output e)  {- ^ Returns the possibly inconsistent event output. -}
-applyFast runtime e = runtimeCall runtime (ApplyFast e)
+applyFast runtime e = Fork.call runtime (ApplyFast e)
 
 
 {- |
@@ -178,14 +196,14 @@ applyConsistent :: (MonadIO m)
   => Runtime e     {- ^ The runtime handle. -}
   -> e             {- ^ The event to be applied. -}
   -> m (Output e)  {- ^ Returns the strongly consistent event output. -}
-applyConsistent runtime e = runtimeCall runtime (ApplyConsistent e)
+applyConsistent runtime e = Fork.call runtime (ApplyConsistent e)
 
 
 {- | Read the current powerstate value. -}
 readState :: (MonadIO m)
   => Runtime e
   -> m (PowerState ClusterId Peer e)
-readState runtime = runtimeCall runtime ReadState
+readState runtime = Fork.call runtime ReadState
 
 
 {- |
@@ -193,23 +211,23 @@ readState runtime = runtimeCall runtime ReadState
   is received.
 -}
 call :: (MonadIO m) => Runtime e -> Peer -> ByteString -> m ByteString
-call runtime target msg = runtimeCall runtime (Call target msg)
+call runtime target msg = Fork.call runtime (Call target msg)
 
 
 {- | Send the result of a call back to the peer that originated it. -}
 sendCallResponse :: (MonadIO m)
-  => Runtime e
+  => RChan e
   -> Peer
   -> MessageId
   -> ByteString
   -> m ()
-sendCallResponse runtime target mid msg =
-  runtimeCast runtime (SendCallResponse target mid msg)
+sendCallResponse runtimeChan target mid msg =
+  Fork.cast runtimeChan (SendCallResponse target mid msg)
 
 
 {- | Send a user message to some other peer, without waiting on a response. -}
 cast :: (MonadIO m) => Runtime e -> Peer -> ByteString -> m ()
-cast runtime target message = runtimeCast runtime (Cast target message)
+cast runtime target message = Fork.cast runtime (Cast target message)
 
 
 {- |
@@ -220,22 +238,31 @@ broadcall :: (MonadIO m)
   => Runtime e
   -> ByteString
   -> m (Map Peer ByteString)
-broadcall runtime msg = runtimeCall runtime (Broadcall msg)
+broadcall runtime msg = Fork.call runtime (Broadcall msg)
 
 
 {- | Send a user message to all peers, without wating on a response. -}
 broadcast :: (MonadIO m) => Runtime e -> ByteString -> m ()
-broadcast runtime msg = runtimeCast runtime (Broadcast msg)
+broadcast runtime msg = Fork.cast runtime (Broadcast msg)
 
 
 {- | Eject a peer from the cluster. -}
 eject :: (MonadIO m) => Runtime e -> Peer -> m ()
-eject runtime peer = runtimeCast runtime (Eject peer)
+eject runtime peer = Fork.cast runtime (Eject peer)
 
 
 {- | Get the identifier for the local peer. -}
 getSelf :: Runtime e -> Peer
 getSelf = rSelf
+
+
+{- |
+  Get the async handle on the background legion thread, in case you want
+  to wait for it to complete (which should never happen except in the
+  case of an error).
+-}
+getAsync :: Runtime e -> Async Void
+getAsync = rAsync
 
 
 {- | The types of messages that can be sent to the runtime. -}
@@ -297,35 +324,6 @@ newtype ClusterId = ClusterId UUID
   deriving (Binary, Show, Eq, ToJSON)
 
 
-{- | A way for the runtime to respond to a message. -}
-newtype Responder a = Responder {
-    unResponder :: a -> IO ()
-  }
-instance Show (Responder a) where
-  show _ = "Responder"
-
-
-{- | Respond to a message, using the given responder, in 'MonadIO'. -}
-respond :: (MonadIO m) => Responder a -> a -> m ()
-respond responder = liftIO . unResponder responder
-
-
-{- | Send a message to the runtime that blocks on a response. -}
-runtimeCall :: (MonadIO m)
-  => Runtime e
-  -> (Responder a -> RuntimeMessage e)
-  -> m a
-runtimeCall runtime withResonder = liftIO $ do
-  mvar <- newEmptyMVar
-  runtimeCast runtime (withResonder (Responder (putMVar mvar)))
-  takeMVar mvar
-
-
-{- | Send a message to the runtime. Do not wait for a result. -}
-runtimeCast :: (MonadIO m) => Runtime e -> RuntimeMessage e -> m ()
-runtimeCast runtime = liftIO . writeChan (rChan runtime)
-
-
 {- |
   Execute the Legion runtime, with the given user definitions, and
   framework settings. This function never returns (except maybe with an
@@ -344,61 +342,73 @@ executeRuntime :: (
   -> (ByteString -> IO ())
      {- ^ Handle a user cast message. -}
   -> RuntimeState e
-  -> Runtime e
+  -> RChan e
     {- ^ A source of requests, together with a way to respond to the requets. -}
-  -> m ()
+  -> m Void
 executeRuntime
     joinBindAddr
     handleUserCall
     handleUserCast
     rts
-    runtime
+    runtimeChan
   = do
     {- Start the various messages sources. -}
-    startPeerListener
-    startJoinListener
-    startPeriodicResend
-
-    void . (`runStateT` rts) . runConduit $
-      chanToSource (rChan runtime)
-      .| awaitForever (\msg -> do
-          $(logDebug) $ "Receieved: " <> showt msg
-          lift $ handleRuntimeMessage msg
+    runPeerListener
+      `raceLog_` runJoinListener
+      `raceLog_` runPeriodicResent
+      `raceLog_`
+        (
+          (`evalStateT` rts) $
+            let
+              -- handleMessages :: StateT (RuntimeState e3) m Void
+              handleMessages = do
+                msg <- liftIO $ readChan (unRChan runtimeChan)
+                $(logDebug) $ "Receieved: " <> showt msg
+                handleRuntimeMessage msg
+                handleMessages
+            in
+              handleMessages
         )
+    fail "Legion runtime stopped."
   where
-    startPeerListener :: (MonadCatch m, MonadLoggerIO m) => m ()
-    startPeerListener = forkC "peer listener" $ 
+    {- | Like 'race_', but with logging. -}
+    raceLog_ :: (MonadLoggerIO m) => LoggingT IO a -> LoggingT IO b -> m ()
+    raceLog_ a b = do
+      logging <- askLoggerIO
+      liftIO $ race_ (runLoggingT a logging) (runLoggingT b logging)
+
+    runPeerListener :: (MonadIO m) => m ()
+    runPeerListener =
       runConduit (
         openIngress (Endpoint (peerAddy (self rts)) Nothing)
         .| awaitForever (\case
              PMMerge ps -> yield (Merge ps)
              PMCall source mid msg -> liftIO $
-               sendCallResponse runtime source mid
+               sendCallResponse runtimeChan source mid
                =<< handleUserCall msg
              PMCast msg -> liftIO (handleUserCast msg)
              PMCallResponse source mid msg ->
                yield (HandleCallResponse source mid msg)
            )
-        .| chanToSink (rChan runtime)
+        .| chanToSink (unRChan runtimeChan)
       )
 
-    startJoinListener :: (MonadCatch m, MonadLoggerIO m) => m ()
-    startJoinListener = do
-      logging <- askLoggerIO
-      forkC "join listener" . (`runLoggingT` logging) $
-        runConduit (
-          openServer joinBindAddr
-          .| awaitForever (\(req, respond_) -> lift $
-              runtimeCall runtime (Join req) >>= respond_
-            )
-        )
-    startPeriodicResend :: (MonadCatch m, MonadLoggerIO m) => m ()
-    startPeriodicResend = forkC "state resend" $
+    runJoinListener :: (MonadLoggerIO m) => m ()
+    runJoinListener =
+      runConduit (
+        openServer joinBindAddr
+        .| awaitForever (\(req, respond_) -> lift $
+             Fork.call runtimeChan (Join req) >>= respond_
+           )
+      )
+
+    runPeriodicResent :: (MonadIO m) => m ()
+    runPeriodicResent =
       let
-        periodicResend :: IO ()
+        periodicResend :: (MonadIO m) => m ()
         periodicResend = do
-          threadDelay 10000
-          runtimeCall runtime Resend
+          liftIO $ threadDelay 10000
+          Fork.call runtimeChan Resend
           periodicResend
       in
         periodicResend
@@ -639,13 +649,16 @@ createConnection :: (Constraints e, MonadCatch m, MonadLoggerIO m)
 createConnection peer = do
     latest <- liftIO $ atomically (newTVar (Just []))
     logging <- askLoggerIO
-    void . liftIO . forkIO . (`runLoggingT` logging) $ do
-      (tryAny . runConduit) (
-          latestSource latest .| openEgress (peerAddy peer)
-        ) >>= \case
-          Left err -> $(logWarn) $ "Connection crashed: " <> showt (peer, err)
-          Right () -> $(logWarn) "Connection closed for no reason."
-      liftIO $ atomically (writeTVar latest Nothing)
+    liftIO . void . async . (`runLoggingT` logging) $
+      finally 
+        (
+          (tryAny . runConduit) (
+              latestSource latest .| openEgress (peerAddy peer)
+            ) >>= \case
+              Left err -> $(logWarn) $ "Connection crashed: " <> showt (peer, err)
+              Right () -> $(logWarn) "Connection closed for no reason."
+        )
+        (liftIO $ atomically (writeTVar latest Nothing))
       
     return (\msg ->
         join . liftIO . atomically $
