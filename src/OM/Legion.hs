@@ -4,6 +4,7 @@ module OM.Legion (
   -- * Starting up the runtime.
   forkLegionary,
   StartupMode(..),
+  getAsync,
 
   -- * Applying state changes.
   applyFast,
@@ -29,6 +30,7 @@ module OM.Legion (
 
 import OM.Legion.Runtime (forkLegionary, StartupMode(NewCluster,
    JoinCluster, Recover), Runtime, applyFast, applyConsistent, readState,
-   ClusterId, Peer, call, cast, broadcall, broadcast, getSelf, eject)
+   ClusterId, Peer, call, cast, broadcall, broadcast, getSelf, eject,
+   getAsync)
 
 
