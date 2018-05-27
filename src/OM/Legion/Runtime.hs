@@ -653,10 +653,8 @@ createConnection peer = do
       finally 
         (
           (tryAny . runConduit) (
-              latestSource latest .| openEgress (peerAddy peer)
-            ) >>= \case
-              Left err -> $(logWarn) $ "Connection crashed: " <> showt (peer, err)
-              Right () -> $(logWarn) "Connection closed for no reason."
+            latestSource latest .| openEgress (peerAddy peer)
+          )
         )
         (liftIO $ atomically (writeTVar latest Nothing))
       
