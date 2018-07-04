@@ -70,7 +70,7 @@ import OM.Legion.Conduit (chanToSink)
 import OM.Legion.UUID (getUUID)
 import OM.Logging (withPrefix)
 import OM.PowerState (PowerState, Event, StateId, projParticipants,
-   EventPack, events, Output, State)
+   EventPack, events, Output, State, infimumId)
 import OM.PowerState.Monad (event, acknowledge, runPowerStateT, merge,
    PowerStateT, disassociate, participate)
 import OM.Show (showt)
@@ -103,7 +103,22 @@ data RuntimeState e = RuntimeState {
                         Responder (Map Peer ByteString)
                       ),
           nextId :: MessageId,
-          notify :: PowerState ClusterId Peer e -> IO ()
+          notify :: PowerState ClusterId Peer e -> IO (),
+           joins :: Map
+                      (StateId Peer)
+                      (Responder (JoinResponse e), Peer)
+                    {- ^
+                      The infimum of the powerstate we send to a new
+                      participant must have moved past the participation
+                      event itself. In other words, the join must be
+                      totally consistent across the cluster. The reason is
+                      that we can't make the new participant responsible
+                      for applying events that occur before it joined
+                      the cluster, because it has no way to ensure
+                      that it can collect all such events.  Therefore,
+                      this field tracks the outstanding joins until they
+                      become consistent.
+                    -}
   }
 
 
@@ -372,6 +387,7 @@ executeRuntime
                 RuntimeState {clusterState = cluster2} <- get
                 when (cluster1 /= cluster2)
                   ($(logDebug) $ "New Cluster State: " <> showt cluster2)
+                handleJoins
                 handleMessages
             in
               handleMessages
@@ -423,6 +439,22 @@ executeRuntime
         periodicResend
 
 
+{- | Handle any outstanding joins. -}
+handleJoins :: (MonadIO m) => StateT (RuntimeState e) m ()
+handleJoins = do
+  state@RuntimeState {joins, clusterState} <- get
+  let
+    (consistent, pending) =
+      Map.partitionWithKey
+        (\k _ -> k <= infimumId clusterState)
+        joins
+  put state {joins = pending}
+  sequence_ [
+      respond responder (JoinOk peer clusterState)
+      | (_, (responder, peer)) <- Map.toList consistent
+    ]
+
+
 {- | Execute the incoming messages. -}
 handleRuntimeMessage :: (
       Constraints e, MonadCatch m, MonadLoggerIO m
@@ -451,8 +483,11 @@ handleRuntimeMessage (Merge other) =
 
 handleRuntimeMessage (Join (JoinRequest addr) responder) = do
   peer <- newPeer addr
-  updateCluster (participate peer)
-  respond responder . JoinOk peer . clusterState =<< get
+  sid <- updateCluster (participate peer)
+  RuntimeState {clusterState} <- get
+  if sid <= infimumId clusterState
+    then respond responder (JoinOk peer clusterState)
+    else modify (\s -> s {joins = Map.insert sid (responder, peer) (joins s)})
 
 handleRuntimeMessage (ReadState responder) =
   respond responder . clusterState =<< get
@@ -790,7 +825,8 @@ makeRuntimeState
         calls = mempty,
         broadcalls = mempty,
         nextId,
-        notify = notify self
+        notify = notify self,
+        joins = mempty
       }
 
 
