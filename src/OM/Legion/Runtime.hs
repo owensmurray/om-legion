@@ -7,6 +7,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns #-}
@@ -43,10 +44,10 @@ import Control.Concurrent.Async (Async, async, race_)
 import Control.Concurrent.STM (TVar, atomically, newTVar, writeTVar,
    readTVar, retry)
 import Control.Exception.Safe (MonadCatch, tryAny, finally)
-import Control.Monad (void, join)
+import Control.Monad (void, join, when)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Logger (MonadLoggerIO, logDebug, logInfo, logWarn,
-   logError, askLoggerIO, runLoggingT, LoggingT)
+   logError, askLoggerIO, runLoggingT, LoggingT, LogStr)
 import Control.Monad.Morph (hoist)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (runExceptT)
@@ -67,8 +68,9 @@ import GHC.Generics (Generic)
 import OM.Fork (Actor, actorChan, Msg, Responder, respond)
 import OM.Legion.Conduit (chanToSink)
 import OM.Legion.UUID (getUUID)
+import OM.Logging (withPrefix)
 import OM.PowerState (PowerState, Event, StateId, projParticipants,
-   EventPack, events, Output, State)
+   EventPack, events, Output, State, infimumId)
 import OM.PowerState.Monad (event, acknowledge, runPowerStateT, merge,
    PowerStateT, disassociate, participate)
 import OM.Show (showt)
@@ -101,7 +103,22 @@ data RuntimeState e = RuntimeState {
                         Responder (Map Peer ByteString)
                       ),
           nextId :: MessageId,
-          notify :: PowerState ClusterId Peer e -> IO ()
+          notify :: PowerState ClusterId Peer e -> IO (),
+           joins :: Map
+                      (StateId Peer)
+                      (Responder (JoinResponse e), Peer)
+                    {- ^
+                      The infimum of the powerstate we send to a new
+                      participant must have moved past the participation
+                      event itself. In other words, the join must be
+                      totally consistent across the cluster. The reason is
+                      that we can't make the new participant responsible
+                      for applying events that occur before it joined
+                      the cluster, because it has no way to ensure
+                      that it can collect all such events.  Therefore,
+                      this field tracks the outstanding joins until they
+                      become consistent.
+                    -}
   }
 
 
@@ -142,7 +159,7 @@ forkLegionary
   = do
     rts <- makeRuntimeState peerBindAddr notify startupMode
     runtimeChan <- RChan <$> liftIO newChan
-    logging <- askLoggerIO
+    logging <- withPrefix (logPrefix (self rts)) <$> askLoggerIO
     asyncHandle <- liftIO . async . (`runLoggingT` logging) $
       executeRuntime
         joinBindAddr
@@ -151,6 +168,9 @@ forkLegionary
         rts
         runtimeChan
     return (Runtime runtimeChan (self rts) asyncHandle)
+  where
+    logPrefix :: Peer -> LogStr
+    logPrefix self_ = "[" <> showt self_ <> "]"
 
 
 {- | A handle on the Legion runtime. -}
@@ -293,8 +313,7 @@ data PeerMessage e
     {- ^ Send a user cast message from one peer to another. -}
   | PMCallResponse Peer MessageId ByteString
     {- ^ Send a response to a user call message. -}
-
-  deriving (Generic)
+  deriving (Generic, Show)
 instance (Binary e) => Binary (PeerMessage e)
 
 
@@ -363,8 +382,12 @@ executeRuntime
               -- handleMessages :: StateT (RuntimeState e3) m Void
               handleMessages = do
                 msg <- liftIO $ readChan (unRChan runtimeChan)
-                $(logDebug) $ "Receieved: " <> showt msg
+                RuntimeState {clusterState = cluster1} <- get
                 handleRuntimeMessage msg
+                RuntimeState {clusterState = cluster2} <- get
+                when (cluster1 /= cluster2)
+                  ($(logDebug) $ "New Cluster State: " <> showt cluster2)
+                handleJoins
                 handleMessages
             in
               handleMessages
@@ -377,18 +400,20 @@ executeRuntime
       logging <- askLoggerIO
       liftIO $ race_ (runLoggingT a logging) (runLoggingT b logging)
 
-    runPeerListener :: (MonadIO m) => m ()
+    runPeerListener :: (MonadLoggerIO m) => m ()
     runPeerListener =
       runConduit (
         openIngress (Endpoint (peerAddy (self rts)) Nothing)
-        .| awaitForever (\case
-             PMMerge ps -> yield (Merge ps)
-             PMCall source mid msg -> liftIO $
-               sendCallResponse runtimeChan source mid
-               =<< handleUserCall msg
-             PMCast msg -> liftIO (handleUserCast msg)
-             PMCallResponse source mid msg ->
-               yield (HandleCallResponse source mid msg)
+        .| awaitForever (\ (msgSource, msg) -> do
+            $(logDebug) $ "Handling: " <> showt (msgSource :: Peer, msg)
+            case msg of
+              PMMerge ps -> yield (Merge ps)
+              PMCall source mid callMsg -> liftIO $
+                sendCallResponse runtimeChan source mid
+                =<< handleUserCall callMsg
+              PMCast castMsg -> liftIO (handleUserCast castMsg)
+              PMCallResponse source mid responseMsg ->
+                yield (HandleCallResponse source mid responseMsg)
            )
         .| chanToSink (unRChan runtimeChan)
       )
@@ -412,6 +437,22 @@ executeRuntime
           periodicResend
       in
         periodicResend
+
+
+{- | Handle any outstanding joins. -}
+handleJoins :: (MonadIO m) => StateT (RuntimeState e) m ()
+handleJoins = do
+  state@RuntimeState {joins, clusterState} <- get
+  let
+    (consistent, pending) =
+      Map.partitionWithKey
+        (\k _ -> k <= infimumId clusterState)
+        joins
+  put state {joins = pending}
+  sequence_ [
+      respond responder (JoinOk peer clusterState)
+      | (_, (responder, peer)) <- Map.toList consistent
+    ]
 
 
 {- | Execute the incoming messages. -}
@@ -442,8 +483,11 @@ handleRuntimeMessage (Merge other) =
 
 handleRuntimeMessage (Join (JoinRequest addr) responder) = do
   peer <- newPeer addr
-  updateCluster (participate peer)
-  respond responder . JoinOk peer . clusterState =<< get
+  sid <- updateCluster (participate peer)
+  RuntimeState {clusterState} <- get
+  if sid <= infimumId clusterState
+    then respond responder (JoinOk peer clusterState)
+    else modify (\s -> s {joins = Map.insert sid (responder, peer) (joins s)})
 
 handleRuntimeMessage (ReadState responder) =
   respond responder . clusterState =<< get
@@ -623,7 +667,7 @@ sendPeer msg peer = do
   state@RuntimeState {connections} <- get
   case Map.lookup peer connections of
     Nothing -> do
-      conn <- lift (createConnection peer)
+      conn <- createConnection peer
       put state {connections = Map.insert peer conn connections}
       sendPeer msg peer
     Just conn ->
@@ -645,15 +689,16 @@ disconnect peer =
 {- | Create a connection to a peer. -}
 createConnection :: (Constraints e, MonadCatch m, MonadLoggerIO m)
   => Peer
-  -> m (PeerMessage e -> StateT (RuntimeState e) IO ())
+  -> StateT (RuntimeState e) m (PeerMessage e -> StateT (RuntimeState e) IO ())
 createConnection peer = do
+    RuntimeState {self} <- get
     latest <- liftIO $ atomically (newTVar (Just []))
     logging <- askLoggerIO
     liftIO . void . async . (`runLoggingT` logging) $
       finally 
         (
           (tryAny . runConduit) (
-            latestSource latest .| openEgress (peerAddy peer)
+            latestSource self latest .| openEgress (peerAddy peer)
           )
         )
         (liftIO $ atomically (writeTVar latest Nothing))
@@ -676,9 +721,10 @@ createConnection peer = do
       )
   where
     latestSource :: (MonadIO m)
-      => TVar (Maybe [PeerMessage e])
-      -> Source m (PeerMessage e)
-    latestSource latest =
+      => Peer
+      -> TVar (Maybe [PeerMessage e])
+      -> Source m (Peer, PeerMessage e)
+    latestSource self_ latest =
       (liftIO . atomically) (
         readTVar latest >>= \case
           Nothing -> return Nothing
@@ -689,8 +735,8 @@ createConnection peer = do
       ) >>= \case
         Nothing -> return ()
         Just messages -> do
-          mapM_ yield messages
-          latestSource latest
+          mapM_ (yield . (self_,)) messages
+          latestSource self_ latest
 
 
 {- |
@@ -779,7 +825,8 @@ makeRuntimeState
         calls = mempty,
         broadcalls = mempty,
         nextId,
-        notify = notify self
+        notify = notify self,
+        joins = mempty
       }
 
 
