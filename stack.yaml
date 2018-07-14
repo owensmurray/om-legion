@@ -12,4 +12,4 @@ extra-deps:
 - om-powerstate-1.1.0.0
 - om-show-0.1.0.1
 - om-socket-0.6.0.0
-resolver: lts-11.6
+resolver: lts-11.17
