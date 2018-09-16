@@ -467,7 +467,7 @@ handleRuntimeMessage (Merge other) =
       Right () -> return ()
 
 handleRuntimeMessage (Join (JoinRequest (Peer -> peer)) responder) = do
-  sid <- updateCluster (participate peer)
+  sid <- updateCluster (disassociate peer >> participate peer)
   RuntimeState {clusterState} <- get
   if sid <= infimumId clusterState
     then respond responder (JoinOk peer clusterState)
