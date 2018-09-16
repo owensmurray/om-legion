@@ -1,5 +1,6 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
@@ -52,9 +53,7 @@ import Control.Monad.Morph (hoist)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (runExceptT)
 import Control.Monad.Trans.State (evalStateT, StateT, get, put, modify)
-import Data.Aeson (ToJSON, toJSON, ToJSONKey, toJSONKey,
-   ToJSONKeyFunction(ToJSONKeyText))
-import Data.Aeson.Encoding (text)
+import Data.Aeson (ToJSON, ToJSONKey)
 import Data.Binary (Binary, Word64)
 import Data.ByteString.Lazy (ByteString)
 import Data.Conduit (runConduit, (.|), awaitForever, Source, yield)
@@ -81,8 +80,6 @@ import System.Random.Shuffle (shuffleM)
 import Web.HttpApiData (FromHttpApiData, parseUrlPiece)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
-import qualified Data.Text as T
-import qualified Data.UUID as UUID
 import qualified OM.Fork as Fork
 import qualified OM.PowerState as PS
 
@@ -318,24 +315,12 @@ instance (Binary e) => Binary (PeerMessage e)
 
 
 {- | An opaque value that identifies a cluster participant. -}
-data Peer = Peer {
-      peerId :: UUID,
-    peerAddy :: AddressDescription
+newtype Peer = Peer {
+    unPeer :: AddressDescription
   }
-  deriving (Generic, Eq, Ord)
-instance Show Peer where
-  show peer = show (peerId peer) ++ ":" ++ show (peerAddy peer)
-instance ToJSONKey Peer where
-  toJSONKey = ToJSONKeyText showt (text . showt)
-instance ToJSON Peer where
-  toJSON = toJSON . show
-instance Binary Peer
+  deriving newtype (Eq, Ord, Show, ToJSONKey, ToJSON, Binary)
 instance FromHttpApiData Peer where
-  parseUrlPiece str =
-    case T.span (/= ':') str of
-      (UUID.fromText -> Just uuid, T.span (== ':') -> (_, addr)) ->
-        Right (Peer uuid (AddressDescription addr))
-      _ -> Left $ "Can't parse peer: " <> showt str
+  parseUrlPiece = fmap (Peer . AddressDescription) . parseUrlPiece
 
 
 {- | An opaque value that identifies a cluster. -}
@@ -403,7 +388,7 @@ executeRuntime
     runPeerListener :: (MonadLoggerIO m) => m ()
     runPeerListener =
       runConduit (
-        openIngress (Endpoint (peerAddy (self rts)) Nothing)
+        openIngress (Endpoint (unPeer (self rts)) Nothing)
         .| awaitForever (\ (msgSource, msg) -> do
             $(logDebug) $ "Handling: " <> showt (msgSource :: Peer, msg)
             case msg of
@@ -481,8 +466,7 @@ handleRuntimeMessage (Merge other) =
       Left err -> $(logError) $ "Bad cluster merge: " <> showt err
       Right () -> return ()
 
-handleRuntimeMessage (Join (JoinRequest addr) responder) = do
-  peer <- newPeer addr
+handleRuntimeMessage (Join (JoinRequest (Peer -> peer)) responder) = do
   sid <- updateCluster (participate peer)
   RuntimeState {clusterState} <- get
   if sid <= infimumId clusterState
@@ -698,7 +682,7 @@ createConnection peer = do
       finally 
         (
           (tryAny . runConduit) (
-            latestSource self latest .| openEgress (peerAddy peer)
+            latestSource self latest .| openEgress (unPeer peer)
           )
         )
         (liftIO $ atomically (writeTVar latest Nothing))
@@ -785,7 +769,8 @@ makeRuntimeState
     NewCluster
   = do
     {- Build a brand new node state, for the first node in a cluster. -}
-    self <- newPeer (bindAddr peerBindAddr)
+    let
+      self = Peer (bindAddr peerBindAddr)
     clusterId <- ClusterId <$> getUUID
     makeRuntimeState
       peerBindAddr
@@ -828,11 +813,6 @@ makeRuntimeState
         notify = notify self,
         joins = mempty
       }
-
-
-{- | Make a new peer. -}
-newPeer :: (MonadIO m) => AddressDescription -> m Peer
-newPeer addr = Peer <$> getUUID <*> pure addr
 
 
 {- | This is the type of a join request message. -}
