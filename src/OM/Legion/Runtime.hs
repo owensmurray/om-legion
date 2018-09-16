@@ -86,36 +86,36 @@ import qualified OM.PowerState as PS
 
 {- | The Legionary runtime state. -}
 data RuntimeState e = RuntimeState {
-            self :: Peer,
-    clusterState :: PowerState ClusterId Peer e,
-     connections :: Map
+            rsSelf :: Peer,
+    rsClusterState :: PowerState ClusterId Peer e,
+     rsConnections :: Map
                       Peer
                       (PeerMessage e -> StateT (RuntimeState e) IO ()),
-         waiting :: Map (StateId Peer) (Responder (Output e)),
-           calls :: Map MessageId (Responder ByteString),
-      broadcalls :: Map
+         rsWaiting :: Map (StateId Peer) (Responder (Output e)),
+           rsCalls :: Map MessageId (Responder ByteString),
+      rsBroadcalls :: Map
                       MessageId
                       (
                         Map Peer (Maybe ByteString),
                         Responder (Map Peer ByteString)
                       ),
-          nextId :: MessageId,
-          notify :: PowerState ClusterId Peer e -> IO (),
-           joins :: Map
+          rsNextId :: MessageId,
+          rsNotify :: PowerState ClusterId Peer e -> IO (),
+           rsJoins :: Map
                       (StateId Peer)
                       (Responder (JoinResponse e), Peer)
-                    {- ^
-                      The infimum of the powerstate we send to a new
-                      participant must have moved past the participation
-                      event itself. In other words, the join must be
-                      totally consistent across the cluster. The reason is
-                      that we can't make the new participant responsible
-                      for applying events that occur before it joined
-                      the cluster, because it has no way to ensure
-                      that it can collect all such events.  Therefore,
-                      this field tracks the outstanding joins until they
-                      become consistent.
-                    -}
+                      {- ^
+                        The infimum of the powerstate we send to
+                        a new participant must have moved past the
+                        participation event itself. In other words,
+                        the join must be totally consistent across the
+                        cluster. The reason is that we can't make the
+                        new participant responsible for applying events
+                        that occur before it joined the cluster, because
+                        it has no way to ensure that it can collect all
+                        such events.  Therefore, this field tracks the
+                        outstanding joins until they become consistent.
+                      -}
   }
 
 
@@ -156,7 +156,7 @@ forkLegionary
   = do
     rts <- makeRuntimeState peerBindAddr notify startupMode
     runtimeChan <- RChan <$> liftIO newChan
-    logging <- withPrefix (logPrefix (self rts)) <$> askLoggerIO
+    logging <- withPrefix (logPrefix (rsSelf rts)) <$> askLoggerIO
     asyncHandle <- liftIO . async . (`runLoggingT` logging) $
       executeRuntime
         joinBindAddr
@@ -164,7 +164,7 @@ forkLegionary
         handleUserCast
         rts
         runtimeChan
-    return (Runtime runtimeChan (self rts) asyncHandle)
+    return (Runtime runtimeChan (rsSelf rts) asyncHandle)
   where
     logPrefix :: Peer -> LogStr
     logPrefix self_ = "[" <> showt self_ <> "]"
@@ -367,9 +367,9 @@ executeRuntime
               -- handleMessages :: StateT (RuntimeState e3) m Void
               handleMessages = do
                 msg <- liftIO $ readChan (unRChan runtimeChan)
-                RuntimeState {clusterState = cluster1} <- get
+                RuntimeState {rsClusterState = cluster1} <- get
                 handleRuntimeMessage msg
-                RuntimeState {clusterState = cluster2} <- get
+                RuntimeState {rsClusterState = cluster2} <- get
                 when (cluster1 /= cluster2)
                   ($(logDebug) $ "New Cluster State: " <> showt cluster2)
                 handleJoins
@@ -388,7 +388,7 @@ executeRuntime
     runPeerListener :: (MonadLoggerIO m) => m ()
     runPeerListener =
       runConduit (
-        openIngress (Endpoint (unPeer (self rts)) Nothing)
+        openIngress (Endpoint (unPeer (rsSelf rts)) Nothing)
         .| awaitForever (\ (msgSource, msg) -> do
             $(logDebug) $ "Handling: " <> showt (msgSource :: Peer, msg)
             case msg of
@@ -427,15 +427,15 @@ executeRuntime
 {- | Handle any outstanding joins. -}
 handleJoins :: (MonadIO m) => StateT (RuntimeState e) m ()
 handleJoins = do
-  state@RuntimeState {joins, clusterState} <- get
+  state@RuntimeState {rsJoins, rsClusterState} <- get
   let
     (consistent, pending) =
       Map.partitionWithKey
-        (\k _ -> k <= infimumId clusterState)
-        joins
-  put state {joins = pending}
+        (\k _ -> k <= infimumId rsClusterState)
+        rsJoins
+  put state {rsJoins = pending}
   sequence_ [
-      respond responder (JoinOk peer clusterState)
+      respond responder (JoinOk peer rsClusterState)
       | (_, (responder, peer)) <- Map.toList consistent
     ]
 
@@ -468,17 +468,17 @@ handleRuntimeMessage (Merge other) =
 
 handleRuntimeMessage (Join (JoinRequest (Peer -> peer)) responder) = do
   sid <- updateCluster (disassociate peer >> participate peer)
-  RuntimeState {clusterState} <- get
-  if sid <= infimumId clusterState
-    then respond responder (JoinOk peer clusterState)
-    else modify (\s -> s {joins = Map.insert sid (responder, peer) (joins s)})
+  RuntimeState {rsClusterState} <- get
+  if sid <= infimumId rsClusterState
+    then respond responder (JoinOk peer rsClusterState)
+    else modify (\s -> s {rsJoins = Map.insert sid (responder, peer) (rsJoins s)})
 
 handleRuntimeMessage (ReadState responder) =
-  respond responder . clusterState =<< get
+  respond responder . rsClusterState =<< get
 
 handleRuntimeMessage (Call target msg responder) = do
     mid <- newMessageId
-    source <- self <$> get
+    source <- rsSelf <$> get
     setCallResponder mid
     sendPeer (PMCall source mid msg) target
   where
@@ -486,9 +486,9 @@ handleRuntimeMessage (Call target msg responder) = do
       => MessageId
       -> StateT (RuntimeState e) m ()
     setCallResponder mid = do
-      state@RuntimeState {calls} <- get
+      state@RuntimeState {rsCalls} <- get
       put state {
-          calls = Map.insert mid responder calls
+          rsCalls = Map.insert mid responder rsCalls
         }
 
 handleRuntimeMessage (Cast target msg) =
@@ -496,7 +496,7 @@ handleRuntimeMessage (Cast target msg) =
 
 handleRuntimeMessage (Broadcall msg responder) = do
     mid <- newMessageId
-    source <- self <$> get
+    source <- rsSelf <$> get
     setBroadcallResponder mid
     mapM_ (sendPeer (PMCall source mid msg)) =<< getPeers
   where
@@ -505,30 +505,30 @@ handleRuntimeMessage (Broadcall msg responder) = do
       -> StateT (RuntimeState e) m ()
     setBroadcallResponder mid = do
       peers <- getPeers
-      state@RuntimeState {broadcalls} <- get
+      state@RuntimeState {rsBroadcalls} <- get
       put state {
-          broadcalls =
+          rsBroadcalls =
             Map.insert
               mid
               (
                 Map.fromList [(peer, Nothing) | peer <- Set.toList peers],
                 responder
               )
-              broadcalls
+              rsBroadcalls
         }
 
 handleRuntimeMessage (Broadcast msg) =
   mapM_ (sendPeer (PMCast msg)) =<< getPeers
 
 handleRuntimeMessage (SendCallResponse target mid msg) = do
-  source <- self <$> get
+  source <- rsSelf <$> get
   sendPeer (PMCallResponse source mid msg) target
 
 handleRuntimeMessage (HandleCallResponse source mid msg) = do
-  state@RuntimeState {calls, broadcalls} <- get
-  case Map.lookup mid calls of
+  state@RuntimeState {rsCalls, rsBroadcalls} <- get
+  case Map.lookup mid rsCalls of
     Nothing ->
-      case Map.lookup mid broadcalls of
+      case Map.lookup mid rsBroadcalls of
         Nothing -> return ()
         Just (responses, responder) ->
           let
@@ -543,16 +543,16 @@ handleRuntimeMessage (HandleCallResponse source mid msg) = do
               then do
                 respond responder response
                 put state {
-                    broadcalls = Map.delete mid broadcalls
+                    rsBroadcalls = Map.delete mid rsBroadcalls
                   }
               else
                 put state {
-                    broadcalls =
-                      Map.insert mid (responses2, responder) broadcalls
+                    rsBroadcalls =
+                      Map.insert mid (responses2, responder) rsBroadcalls
                   }
     Just responder -> do
       respond responder msg
-      put state {calls = Map.delete mid calls}
+      put state {rsCalls = Map.delete mid rsCalls}
 
 handleRuntimeMessage (Resend responder) =
   propagate >>= respond responder
@@ -560,15 +560,15 @@ handleRuntimeMessage (Resend responder) =
 
 {- | Get the projected peers. -}
 getPeers :: (Monad m) => StateT (RuntimeState e) m (Set Peer)
-getPeers = projParticipants . clusterState <$> get
+getPeers = projParticipants . rsClusterState <$> get
 
 
 {- | Get a new messageId. -}
 newMessageId :: (Monad m) => StateT (RuntimeState e) m MessageId
 newMessageId = do
-  state@RuntimeState {nextId} <- get
-  put state {nextId = nextMessageId nextId}
-  return nextId
+  state@RuntimeState {rsNextId} <- get
+  put state {rsNextId = nextMessageId rsNextId}
+  return rsNextId
 
 
 {- |
@@ -581,8 +581,8 @@ updateCluster :: (
   => PowerStateT ClusterId Peer e (StateT (RuntimeState e) m) a
   -> StateT (RuntimeState e) m a
 updateCluster action = do
-  RuntimeState {self} <- get
-  updateClusterAs self action
+  RuntimeState {rsSelf} <- get
+  updateClusterAs rsSelf action
 
 
 {- |
@@ -597,11 +597,11 @@ updateClusterAs :: (
   -> PowerStateT ClusterId Peer e (StateT (RuntimeState e) m) a
   -> StateT (RuntimeState e) m a
 updateClusterAs asPeer action = do
-  state@RuntimeState {clusterState} <- get
-  runPowerStateT asPeer clusterState (action <* acknowledge) >>=
+  state@RuntimeState {rsClusterState} <- get
+  runPowerStateT asPeer rsClusterState (action <* acknowledge) >>=
     \(v, _propAction, newClusterState, infs) -> do
-      liftIO . ($ newClusterState) . notify =<< get
-      put state {clusterState = newClusterState}
+      liftIO . ($ newClusterState) . rsNotify =<< get
+      put state {rsClusterState = newClusterState}
       respondToWaiting infs
       return v
 
@@ -612,8 +612,8 @@ waitOn :: (Monad m)
   -> Responder (Output e)
   -> StateT (RuntimeState e) m ()
 waitOn sid responder =
-  modify (\state@RuntimeState {waiting} -> state {
-    waiting = Map.insert sid responder waiting
+  modify (\state@RuntimeState {rsWaiting} -> state {
+    rsWaiting = Map.insert sid responder rsWaiting
   })
 
 
@@ -621,14 +621,14 @@ waitOn sid responder =
 propagate :: (Constraints e, MonadCatch m, MonadLoggerIO m)
   => StateT (RuntimeState e) m ()
 propagate = do
-    RuntimeState {self, clusterState} <- get
+    RuntimeState {rsSelf, rsClusterState} <- get
     let
-      targets = Set.delete self $
-        PS.allParticipants clusterState
+      targets = Set.delete rsSelf $
+        PS.allParticipants rsClusterState
 
     liftIO (shuffleM (Set.toList targets)) >>= \case
       [] -> return ()
-      target:_ -> sendPeer (PMMerge (events clusterState)) target
+      target:_ -> sendPeer (PMMerge (events rsClusterState)) target
     disconnectObsolete
   where
     {- |
@@ -637,9 +637,9 @@ propagate = do
     -}
     disconnectObsolete :: (MonadIO m) => StateT (RuntimeState e) m ()
     disconnectObsolete = do
-        RuntimeState {clusterState, connections} <- get
+        RuntimeState {rsClusterState, rsConnections} <- get
         mapM_ disconnect $
-          PS.allParticipants clusterState \\ Map.keysSet connections
+          PS.allParticipants rsClusterState \\ Map.keysSet rsConnections
 
 
 {- | Send a peer message, creating a new connection if need be. -}
@@ -648,11 +648,11 @@ sendPeer :: (Constraints e, MonadCatch m, MonadLoggerIO m)
   -> Peer
   -> StateT (RuntimeState e) m ()
 sendPeer msg peer = do
-  state@RuntimeState {connections} <- get
-  case Map.lookup peer connections of
+  state@RuntimeState {rsConnections} <- get
+  case Map.lookup peer rsConnections of
     Nothing -> do
       conn <- createConnection peer
-      put state {connections = Map.insert peer conn connections}
+      put state {rsConnections = Map.insert peer conn rsConnections}
       sendPeer msg peer
     Just conn ->
       (hoist liftIO . tryAny) (conn msg) >>= \case
@@ -665,8 +665,8 @@ sendPeer msg peer = do
 {- | Disconnect the connection to a peer. -}
 disconnect :: (MonadIO m) => Peer -> StateT (RuntimeState e) m ()
 disconnect peer =
-  modify (\state@RuntimeState {connections} -> state {
-    connections = Map.delete peer connections
+  modify (\state@RuntimeState {rsConnections} -> state {
+    rsConnections = Map.delete peer rsConnections
   })
 
 
@@ -675,14 +675,14 @@ createConnection :: (Constraints e, MonadCatch m, MonadLoggerIO m)
   => Peer
   -> StateT (RuntimeState e) m (PeerMessage e -> StateT (RuntimeState e) IO ())
 createConnection peer = do
-    RuntimeState {self} <- get
+    RuntimeState {rsSelf} <- get
     latest <- liftIO $ atomically (newTVar (Just []))
     logging <- askLoggerIO
     liftIO . void . async . (`runLoggingT` logging) $
       finally 
         (
           (tryAny . runConduit) (
-            latestSource self latest .| openEgress (unPeer peer)
+            latestSource rsSelf latest .| openEgress (unPeer peer)
           )
         )
         (liftIO $ atomically (writeTVar latest Nothing))
@@ -692,7 +692,7 @@ createConnection peer = do
           readTVar latest >>= \case
             Nothing ->
               return $ modify (\state -> state {
-                  connections = Map.delete peer (connections state)
+                  rsConnections = Map.delete peer (rsConnections state)
                 })
             Just msgs -> do
               writeTVar latest (
@@ -737,12 +737,12 @@ respondToWaiting available =
       => (StateId Peer, Output e)
       -> StateT (RuntimeState e) m ()
     respondToOne (sid, o) = do
-      state@RuntimeState {waiting} <- get
-      case Map.lookup sid waiting of
+      state@RuntimeState {rsWaiting} <- get
+      case Map.lookup sid rsWaiting of
         Nothing -> return ()
         Just responder -> do
           respond responder o
-          put state {waiting = Map.delete sid waiting}
+          put state {rsWaiting = Map.delete sid rsWaiting}
 
 
 {- | This defines the various ways a node can be spun up. -}
@@ -801,17 +801,17 @@ makeRuntimeState
     notify
     (Recover self clusterState)
   = do
-    nextId <- newSequence
+    rsNextId <- newSequence
     return RuntimeState {
-        self,
-        clusterState,
-        connections = mempty,
-        waiting = mempty,
-        calls = mempty,
-        broadcalls = mempty,
-        nextId,
-        notify = notify self,
-        joins = mempty
+        rsSelf = self,
+        rsClusterState = clusterState,
+        rsConnections = mempty,
+        rsWaiting = mempty,
+        rsCalls = mempty,
+        rsBroadcalls = mempty,
+        rsNextId,
+        rsNotify = notify self,
+        rsJoins = mempty
       }
 
 
