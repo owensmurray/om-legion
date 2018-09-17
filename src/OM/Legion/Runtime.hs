@@ -40,15 +40,15 @@ module OM.Legion.Runtime (
 
 
 import Control.Concurrent (Chan, writeChan, newChan, threadDelay,
-   readChan)
+  readChan)
 import Control.Concurrent.Async (Async, async, race_)
 import Control.Concurrent.STM (TVar, atomically, newTVar, writeTVar,
-   readTVar, retry)
+  readTVar, retry)
 import Control.Exception.Safe (MonadCatch, tryAny, finally)
 import Control.Monad (void, join, when)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Logger (MonadLoggerIO, logDebug, logInfo, logWarn,
-   logError, askLoggerIO, runLoggingT, LoggingT, LogStr)
+  logError, askLoggerIO, runLoggingT, LoggingT, LogStr)
 import Control.Monad.Morph (hoist)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (runExceptT)
@@ -69,13 +69,13 @@ import OM.Legion.Conduit (chanToSink)
 import OM.Legion.UUID (getUUID)
 import OM.Logging (withPrefix)
 import OM.PowerState (PowerState, Event, StateId, projParticipants,
-   EventPack, events, Output, State, infimumId)
+  EventPack, events, Output, State, infimumId)
 import OM.PowerState.Monad (event, acknowledge, runPowerStateT, merge,
-   PowerStateT, disassociate, participate)
+  PowerStateT, disassociate, participate)
 import OM.Show (showt)
 import OM.Socket (connectServer, bindAddr,
-   AddressDescription(AddressDescription), openEgress, Endpoint(Endpoint),
-   openIngress, openServer)
+  AddressDescription(AddressDescription), openEgress, Endpoint(Endpoint),
+  openIngress, openServer)
 import System.Random.Shuffle (shuffleM)
 import Web.HttpApiData (FromHttpApiData, parseUrlPiece)
 import qualified Data.Map as Map
@@ -134,10 +134,8 @@ forkLegionary :: (
        The address on which the legion framework will listen for cluster
        join requests.
      -}
-  -> (ByteString -> IO ByteString)
-     {- ^ Handle a user call request.  -}
-  -> (ByteString -> IO ())
-     {- ^ Handle a user cast message. -}
+  -> (ByteString -> IO ByteString) {- ^ Handle a user call request. -}
+  -> (ByteString -> IO ()) {- ^ Handle a user cast message. -}
   -> (Peer -> PowerState ClusterId Peer e -> IO ())
      {- ^ Callback when the cluster-wide powerstate changes. -}
   -> StartupMode e
