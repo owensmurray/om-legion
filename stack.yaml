@@ -9,7 +9,7 @@ extra-deps:
 - om-json-0.2.4.0
 - om-lift-0.1.0.1
 - om-logging-0.2.0.3
-- om-powerstate-2.0.0.0
+- om-powerstate-3.0.0.0
 - om-show-0.1.0.2
 - om-socket-0.7.0.0
 resolver: lts-12.7

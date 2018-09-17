@@ -24,13 +24,13 @@ module OM.Legion (
   -- * Other types.
   Runtime,
   ClusterId,
-  Peer,
+  Peer(..),
 ) where
 
 
 import OM.Legion.Runtime (forkLegionary, StartupMode(NewCluster,
    JoinCluster, Recover), Runtime, applyFast, applyConsistent, readState,
-   ClusterId, Peer, call, cast, broadcall, broadcast, getSelf, eject,
-   getAsync)
+   ClusterId, Peer(Peer), call, cast, broadcall, broadcast, getSelf,
+   eject, getAsync)
 
 
