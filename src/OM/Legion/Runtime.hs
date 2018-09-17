@@ -370,7 +370,7 @@ executeRuntime
                 RuntimeState {rsClusterState = cluster2} <- get
                 when (cluster1 /= cluster2)
                   ($(logDebug) $ "New Cluster State: " <> showt cluster2)
-                handleJoins
+                handleOutstandingJoins
                 handleMessages
             in
               handleMessages
@@ -423,8 +423,8 @@ executeRuntime
 
 
 {- | Handle any outstanding joins. -}
-handleJoins :: (MonadIO m) => StateT (RuntimeState e) m ()
-handleJoins = do
+handleOutstandingJoins :: (MonadIO m) => StateT (RuntimeState e) m ()
+handleOutstandingJoins = do
   state@RuntimeState {rsJoins, rsClusterState} <- get
   let
     (consistent, pending) =
