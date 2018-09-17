@@ -35,7 +35,7 @@ module OM.Legion.Runtime (
 
   -- * Other types
   ClusterId,
-  Peer,
+  Peer(..),
 ) where
 
 
@@ -73,9 +73,8 @@ import OM.PowerState (PowerState, Event, StateId, projParticipants,
 import OM.PowerState.Monad (event, acknowledge, runPowerStateT, merge,
   PowerStateT, disassociate, participate)
 import OM.Show (showt)
-import OM.Socket (connectServer, bindAddr,
-  AddressDescription(AddressDescription), openEgress, Endpoint(Endpoint),
-  openIngress, openServer)
+import OM.Socket (connectServer, AddressDescription(AddressDescription),
+  openEgress, Endpoint(Endpoint), openIngress, openServer)
 import System.Random.Shuffle (shuffleM)
 import Web.HttpApiData (FromHttpApiData, parseUrlPiece)
 import qualified Data.Map as Map
@@ -103,7 +102,7 @@ data RuntimeState e = RuntimeState {
           rsNotify :: PowerState ClusterId Peer e -> IO (),
            rsJoins :: Map
                       (StateId Peer)
-                      (Responder (JoinResponse e), Peer)
+                      (Responder (JoinResponse e))
                       {- ^
                         The infimum of the powerstate we send to
                         a new participant must have moved past the
@@ -124,11 +123,7 @@ forkLegionary :: (
       Binary (State e), Binary e, Default (State e), Eq e, Event e,
       MonadCatch m, MonadLoggerIO m, Show e, ToJSON (State e), ToJSON e
     )
-  => Endpoint
-     {- ^
-       The address on which the legion framework will listen for
-       rebalancing and cluster management commands.
-     -}
+  => Peer {- ^ The peer being launched. -}
   -> Endpoint
      {- ^
        The address on which the legion framework will listen for cluster
@@ -145,14 +140,14 @@ forkLegionary :: (
      -}
   -> m (Runtime e)
 forkLegionary
-    peerBindAddr
+    self
     joinBindAddr
     handleUserCall
     handleUserCast
     notify
     startupMode
   = do
-    rts <- makeRuntimeState peerBindAddr notify startupMode
+    rts <- makeRuntimeState self notify startupMode
     runtimeChan <- RChan <$> liftIO newChan
     logging <- withPrefix (logPrefix (rsSelf rts)) <$> askLoggerIO
     asyncHandle <- liftIO . async . (`runLoggingT` logging) $
@@ -433,8 +428,8 @@ handleOutstandingJoins = do
         rsJoins
   put state {rsJoins = pending}
   sequence_ [
-      respond responder (JoinOk peer rsClusterState)
-      | (_, (responder, peer)) <- Map.toList consistent
+      respond responder (JoinOk rsClusterState)
+      | (_, responder) <- Map.toList consistent
     ]
 
 
@@ -464,12 +459,12 @@ handleRuntimeMessage (Merge other) =
       Left err -> $(logError) $ "Bad cluster merge: " <> showt err
       Right () -> return ()
 
-handleRuntimeMessage (Join (JoinRequest (Peer -> peer)) responder) = do
+handleRuntimeMessage (Join (JoinRequest peer) responder) = do
   sid <- updateCluster (disassociate peer >> participate peer)
   RuntimeState {rsClusterState} <- get
   if sid <= infimumId rsClusterState
-    then respond responder (JoinOk peer rsClusterState)
-    else modify (\s -> s {rsJoins = Map.insert sid (responder, peer) (rsJoins s)})
+    then respond responder (JoinOk rsClusterState)
+    else modify (\s -> s {rsJoins = Map.insert sid responder (rsJoins s)})
 
 handleRuntimeMessage (ReadState responder) =
   respond responder . rsClusterState =<< get
@@ -749,45 +744,42 @@ data StartupMode e
     {- ^ Indicates that we should bootstrap a new cluster at startup. -}
   | JoinCluster AddressDescription
     {- ^ Indicates that the node should try to join an existing cluster. -}
-  | Recover Peer (PowerState ClusterId Peer e)
+  | Recover (PowerState ClusterId Peer e)
 deriving instance (ToJSON e, ToJSON (State e)) => Show (StartupMode e)
 
 
 {- | Initialize the runtime state. -}
 makeRuntimeState :: (Constraints e, MonadLoggerIO m)
-  => Endpoint
+  => Peer
   -> (Peer -> PowerState ClusterId Peer e -> IO ())
      {- ^ Callback when the cluster-wide powerstate changes. -}
   -> StartupMode e
   -> m (RuntimeState e)
 
 makeRuntimeState
-    peerBindAddr
+    self
     notify
     NewCluster
   = do
     {- Build a brand new node state, for the first node in a cluster. -}
-    let
-      self = Peer (bindAddr peerBindAddr)
     clusterId <- ClusterId <$> getUUID
     makeRuntimeState
-      peerBindAddr
+      self
       notify
-      (Recover self (PS.new clusterId (Set.singleton self)))
+      (Recover (PS.new clusterId (Set.singleton self)))
 
 makeRuntimeState
-    peerBindAddr
+    self
     notify
     (JoinCluster addr)
   = do
     {- Join a cluster an existing cluster. -}
     $(logInfo) "Trying to join an existing cluster."
-    JoinOk self cluster <-
+    JoinOk cluster <-
       requestJoin
       . JoinRequest
-      . bindAddr
-      $ peerBindAddr
-    makeRuntimeState peerBindAddr notify (Recover self cluster)
+      $ self
+    makeRuntimeState self notify (Recover cluster)
   where
     requestJoin :: (Constraints e, MonadLoggerIO m)
       => JoinRequest
@@ -795,9 +787,9 @@ makeRuntimeState
     requestJoin joinMsg = ($ joinMsg) =<< connectServer addr
 
 makeRuntimeState
-    _peerBindAddr
+    self
     notify
-    (Recover self clusterState)
+    (Recover clusterState)
   = do
     rsNextId <- newSequence
     return RuntimeState {
@@ -814,14 +806,14 @@ makeRuntimeState
 
 
 {- | This is the type of a join request message. -}
-newtype JoinRequest = JoinRequest AddressDescription
+newtype JoinRequest = JoinRequest Peer
   deriving (Generic, Show)
 instance Binary JoinRequest
 
 
 {- | The response to a JoinRequest message -}
-data JoinResponse e
-  = JoinOk Peer (PowerState ClusterId Peer e)
+newtype JoinResponse e
+  = JoinOk (PowerState ClusterId Peer e)
   deriving (Generic)
 deriving instance (Constraints e) => Show (JoinResponse e)
 instance (Constraints e) => Binary (JoinResponse e)
