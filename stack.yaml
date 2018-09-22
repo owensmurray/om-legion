@@ -4,12 +4,14 @@ packages:
 - .
 extra-deps:
 - load-balancing-1.0.1.2
+- om-deploy-types-1.2.1.1
 - om-discovery-client-0.1.0.1
 - om-fork-0.2.0.1
+- om-gce-metadata-0.1.4.0
 - om-json-0.2.4.0
 - om-lift-0.1.0.1
 - om-logging-0.2.0.3
-- om-powerstate-3.0.0.0
+- om-powerstate-3.0.1.0
 - om-show-0.1.0.2
 - om-socket-0.7.0.0
 resolver: lts-12.7

@@ -21,7 +21,7 @@ module OM.Legion.Runtime (
   Runtime,
   StartupMode(..),
 
-  -- * Runtime Interface
+  -- * Runtime Interface.
   applyFast,
   applyConsistent,
   readState,
@@ -33,9 +33,11 @@ module OM.Legion.Runtime (
   getSelf,
   getAsync,
 
-  -- * Other types
-  ClusterId,
+  -- * Other Exports.
+  ClusterId(..),
   Peer(..),
+  getClusterId,
+  joinMessagePort,
 ) where
 
 
@@ -61,9 +63,13 @@ import Data.Default.Class (Default)
 import Data.Map (Map)
 import Data.Monoid ((<>))
 import Data.Set (Set, (\\))
+import Data.String (IsString)
+import Data.Text (Text)
 import Data.UUID (UUID)
 import Data.Void (Void)
 import GHC.Generics (Generic)
+import Network.Socket (PortNumber)
+import OM.Deploy.Types (NodeName(NodeName), unNodeName)
 import OM.Fork (Actor, actorChan, Msg, Responder, respond)
 import OM.Legion.Conduit (chanToSink)
 import OM.Legion.UUID (getUUID)
@@ -124,11 +130,6 @@ forkLegionary :: (
       MonadCatch m, MonadLoggerIO m, Show e, ToJSON (State e), ToJSON e
     )
   => Peer {- ^ The peer being launched. -}
-  -> Endpoint
-     {- ^
-       The address on which the legion framework will listen for cluster
-       join requests.
-     -}
   -> (ByteString -> IO ByteString) {- ^ Handle a user call request. -}
   -> (ByteString -> IO ()) {- ^ Handle a user cast message. -}
   -> (Peer -> PowerState ClusterId Peer e -> IO ())
@@ -141,7 +142,6 @@ forkLegionary :: (
   -> m (Runtime e)
 forkLegionary
     self
-    joinBindAddr
     handleUserCall
     handleUserCast
     notify
@@ -152,12 +152,19 @@ forkLegionary
     logging <- withPrefix (logPrefix (rsSelf rts)) <$> askLoggerIO
     asyncHandle <- liftIO . async . (`runLoggingT` logging) $
       executeRuntime
-        joinBindAddr
         handleUserCall
         handleUserCast
         rts
         runtimeChan
-    return (Runtime runtimeChan (rsSelf rts) asyncHandle)
+    let
+      clusterId :: ClusterId
+      clusterId = PS.origin (rsClusterState rts)
+    return Runtime {
+             rChan = runtimeChan,
+             rSelf = rsSelf rts,
+            rAsync = asyncHandle,
+        rClusterId = clusterId
+      }
   where
     logPrefix :: Peer -> LogStr
     logPrefix self_ = "[" <> showt self_ <> "]"
@@ -165,9 +172,10 @@ forkLegionary
 
 {- | A handle on the Legion runtime. -}
 data Runtime e = Runtime {
-     rChan :: RChan e,
-     rSelf :: Peer,
-    rAsync :: Async Void
+         rChan :: RChan e,
+         rSelf :: Peer,
+        rAsync :: Async Void,
+    rClusterId :: ClusterId
   }
 instance Actor (Runtime e) where
   type Msg (Runtime e) = RuntimeMessage e
@@ -309,15 +317,17 @@ instance (Binary e) => Binary (PeerMessage e)
 
 {- | An opaque value that identifies a cluster participant. -}
 newtype Peer = Peer {
-    unPeer :: AddressDescription
+    unPeer :: NodeName
   }
-  deriving newtype (Eq, Ord, Show, ToJSONKey, ToJSON, Binary)
+  deriving newtype (Eq, Ord, Show, ToJSONKey, ToJSON, Binary, IsString)
 instance FromHttpApiData Peer where
-  parseUrlPiece = fmap (Peer . AddressDescription) . parseUrlPiece
+  parseUrlPiece = fmap (Peer . NodeName) . parseUrlPiece
 
 
 {- | An opaque value that identifies a cluster. -}
-newtype ClusterId = ClusterId UUID
+newtype ClusterId = ClusterId {
+    unClusterId :: Text
+  }
   deriving (Binary, Show, Eq, ToJSON)
 
 
@@ -329,12 +339,7 @@ newtype ClusterId = ClusterId UUID
 executeRuntime :: (
       Constraints e, MonadCatch m, MonadLoggerIO m
     )
-  => Endpoint
-     {- ^
-       The address on which the legion framework will listen for cluster
-       join requests.
-     -}
-  -> (ByteString -> IO ByteString)
+  => (ByteString -> IO ByteString)
      {- ^ Handle a user call request.  -}
   -> (ByteString -> IO ())
      {- ^ Handle a user cast message. -}
@@ -343,7 +348,6 @@ executeRuntime :: (
     {- ^ A source of requests, together with a way to respond to the requets. -}
   -> m Void
 executeRuntime
-    joinBindAddr
     handleUserCall
     handleUserCast
     rts
@@ -380,30 +384,42 @@ executeRuntime
 
     runPeerListener :: (MonadLoggerIO m) => m ()
     runPeerListener =
-      runConduit (
-        openIngress (Endpoint (unPeer (rsSelf rts)) Nothing)
-        .| awaitForever (\ (msgSource, msg) -> do
-            $(logDebug) $ "Handling: " <> showt (msgSource :: Peer, msg)
-            case msg of
-              PMMerge ps -> yield (Merge ps)
-              PMCall source mid callMsg -> liftIO $
-                sendCallResponse runtimeChan source mid
-                =<< handleUserCall callMsg
-              PMCast castMsg -> liftIO (handleUserCast castMsg)
-              PMCallResponse source mid responseMsg ->
-                yield (HandleCallResponse source mid responseMsg)
-           )
-        .| chanToSink (unRChan runtimeChan)
-      )
+      let
+        addy :: AddressDescription
+        addy =
+          AddressDescription
+            (unNodeName (unPeer (rsSelf rts)) <> ":" <> showt peerMessagePort)
+      in
+        runConduit (
+          openIngress (Endpoint addy Nothing)
+          .| awaitForever (\ (msgSource, msg) -> do
+              $(logDebug) $ "Handling: " <> showt (msgSource :: Peer, msg)
+              case msg of
+                PMMerge ps -> yield (Merge ps)
+                PMCall source mid callMsg -> liftIO $
+                  sendCallResponse runtimeChan source mid
+                  =<< handleUserCall callMsg
+                PMCast castMsg -> liftIO (handleUserCast castMsg)
+                PMCallResponse source mid responseMsg ->
+                  yield (HandleCallResponse source mid responseMsg)
+             )
+          .| chanToSink (unRChan runtimeChan)
+        )
 
     runJoinListener :: (MonadLoggerIO m) => m ()
     runJoinListener =
-      runConduit (
-        openServer joinBindAddr
-        .| awaitForever (\(req, respond_) -> lift $
-             Fork.call runtimeChan (Join req) >>= respond_
-           )
-      )
+      let
+        addy :: AddressDescription
+        addy =
+          AddressDescription
+            (unNodeName (unPeer (rsSelf rts)) <> ":" <> showt joinMessagePort)
+      in
+        runConduit (
+          openServer (Endpoint addy Nothing)
+          .| awaitForever (\(req, respond_) -> lift $
+               Fork.call runtimeChan (Join req) >>= respond_
+             )
+        )
 
     runPeriodicResent :: (MonadIO m) => m ()
     runPeriodicResent =
@@ -672,13 +688,19 @@ createConnection peer = do
     latest <- liftIO $ atomically (newTVar (Just []))
     logging <- askLoggerIO
     liftIO . void . async . (`runLoggingT` logging) $
-      finally 
-        (
-          (tryAny . runConduit) (
-            latestSource rsSelf latest .| openEgress (unPeer peer)
+      let
+        addy :: AddressDescription
+        addy =
+          AddressDescription
+            (unNodeName (unPeer peer) <> ":" <> showt peerMessagePort)
+      in
+        finally 
+          (
+            (tryAny . runConduit) (
+              latestSource rsSelf latest .| openEgress addy
+            )
           )
-        )
-        (liftIO $ atomically (writeTVar latest Nothing))
+          (liftIO $ atomically (writeTVar latest Nothing))
       
     return (\msg ->
         join . liftIO . atomically $
@@ -740,7 +762,7 @@ respondToWaiting available =
 
 {- | This defines the various ways a node can be spun up. -}
 data StartupMode e
-  = NewCluster
+  = NewCluster ClusterId
     {- ^ Indicates that we should bootstrap a new cluster at startup. -}
   | JoinCluster AddressDescription
     {- ^ Indicates that the node should try to join an existing cluster. -}
@@ -759,10 +781,9 @@ makeRuntimeState :: (Constraints e, MonadLoggerIO m)
 makeRuntimeState
     self
     notify
-    NewCluster
-  = do
+    (NewCluster clusterId)
+  =
     {- Build a brand new node state, for the first node in a cluster. -}
-    clusterId <- ClusterId <$> getUUID
     makeRuntimeState
       self
       notify
@@ -848,5 +869,20 @@ type Constraints e = (
     Binary (State e), Binary e, Default (State e), Eq e, Event e, Show e,
     ToJSON (State e), ToJSON e
   )
+
+
+{- | Obtain the 'ClusterId'. -}
+getClusterId :: Runtime e -> ClusterId
+getClusterId = rClusterId
+
+
+{- | The peer message port. -}
+peerMessagePort :: PortNumber
+peerMessagePort = 5288
+
+
+{- | The join message port  -}
+joinMessagePort :: PortNumber
+joinMessagePort = 5289
 
 
