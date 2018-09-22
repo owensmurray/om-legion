@@ -157,7 +157,15 @@ forkLegionary
         handleUserCast
         rts
         runtimeChan
-    return (Runtime runtimeChan (rsSelf rts) asyncHandle)
+    let
+      clusterId :: ClusterId
+      clusterId = PS.origin (rsClusterState rts)
+    return Runtime {
+             rChan = runtimeChan,
+             rSelf = rsSelf rts,
+            rAsync = asyncHandle,
+        rClusterId = clusterId
+      }
   where
     logPrefix :: Peer -> LogStr
     logPrefix self_ = "[" <> showt self_ <> "]"
@@ -165,9 +173,10 @@ forkLegionary
 
 {- | A handle on the Legion runtime. -}
 data Runtime e = Runtime {
-     rChan :: RChan e,
-     rSelf :: Peer,
-    rAsync :: Async Void
+         rChan :: RChan e,
+         rSelf :: Peer,
+        rAsync :: Async Void,
+    rClusterId :: ClusterId
   }
 instance Actor (Runtime e) where
   type Msg (Runtime e) = RuntimeMessage e
@@ -740,7 +749,7 @@ respondToWaiting available =
 
 {- | This defines the various ways a node can be spun up. -}
 data StartupMode e
-  = NewCluster
+  = NewCluster ClusterId
     {- ^ Indicates that we should bootstrap a new cluster at startup. -}
   | JoinCluster AddressDescription
     {- ^ Indicates that the node should try to join an existing cluster. -}
@@ -759,10 +768,9 @@ makeRuntimeState :: (Constraints e, MonadLoggerIO m)
 makeRuntimeState
     self
     notify
-    NewCluster
-  = do
+    (NewCluster clusterId)
+  =
     {- Build a brand new node state, for the first node in a cluster. -}
-    clusterId <- ClusterId <$> getUUID
     makeRuntimeState
       self
       notify
@@ -848,5 +856,10 @@ type Constraints e = (
     Binary (State e), Binary e, Default (State e), Eq e, Event e, Show e,
     ToJSON (State e), ToJSON e
   )
+
+
+{- | Obtain the 'ClusterId'. -}
+getClusterId :: Runtime e -> ClusterId
+getClusterId = rClusterId
 
 
