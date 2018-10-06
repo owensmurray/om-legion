@@ -126,7 +126,8 @@ data RuntimeState e = RuntimeState {
 {- | Fork the Legion runtime system. -}
 forkLegionary :: (
       Binary (State e), Binary e, Default (State e), Eq e, Event e,
-      MonadCatch m, MonadLoggerIO m, Show e, ToJSON (State e), ToJSON e
+      MonadCatch m, MonadLoggerIO m, Show e, ToJSON (State e), ToJSON e,
+      Show (Output e)
     )
   => Peer {- ^ The peer being launched. -}
   -> (ByteString -> IO ByteString) {- ^ Handle a user call request. -}
@@ -166,7 +167,7 @@ forkLegionary
       }
   where
     logPrefix :: Peer -> LogStr
-    logPrefix self_ = "[" <> showt self_ <> "]"
+    logPrefix self_ = "[" <> showt self_ <> "] "
 
 
 {- | A handle on the Legion runtime. -}
@@ -364,6 +365,7 @@ executeRuntime
               handleMessages = do
                 msg <- liftIO $ readChan (unRChan runtimeChan)
                 RuntimeState {rsClusterState = cluster1} <- get
+                $(logDebug) $ "Handling: " <> showt msg
                 handleRuntimeMessage msg
                 RuntimeState {rsClusterState = cluster2} <- get
                 when (cluster1 /= cluster2)
@@ -460,10 +462,12 @@ handleRuntimeMessage (ApplyFast e responder) =
     (o, _sid) <- event e
     respond responder o
 
-handleRuntimeMessage (ApplyConsistent e responder) =
+handleRuntimeMessage (ApplyConsistent e responder) = do
   updateCluster $ do
     (_v, sid) <- event e
     lift (waitOn sid responder)
+  rs <- get
+  $(logDebug) $ "Waiting: " <> showt (rsWaiting rs)
 
 handleRuntimeMessage (Eject peer) =
   updateClusterAs peer $ disassociate peer
@@ -741,10 +745,13 @@ createConnection peer = do
   Respond to event applications that are waiting on a consistent result,
   if such a result is available.
 -}
-respondToWaiting :: (MonadIO m)
+respondToWaiting :: (MonadLoggerIO m, Show (Output e))
   => Map (StateId Peer) (Output e)
   -> StateT (RuntimeState e) m ()
-respondToWaiting available =
+respondToWaiting available = do
+    rs <- get
+    $(logDebug)
+      $ "Responding to: " <> showt (available, Map.keysSet (rsWaiting rs))
     mapM_ respondToOne (Map.toList available)
   where
     respondToOne :: (MonadIO m)
@@ -866,7 +873,7 @@ nextMessageId (M sequenceId ord) = M sequenceId (ord + 1)
 
 type Constraints e = (
     Binary (State e), Binary e, Default (State e), Eq e, Event e, Show e,
-    ToJSON (State e), ToJSON e
+    ToJSON (State e), ToJSON e, Show (Output e)
   )
 
 
