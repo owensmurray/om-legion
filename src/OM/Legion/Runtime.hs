@@ -609,11 +609,11 @@ updateClusterAs :: (
   -> PowerStateT ClusterId Peer e (StateT (RuntimeState e) m) a
   -> StateT (RuntimeState e) m a
 updateClusterAs asPeer action = do
-  state@RuntimeState {rsClusterState} <- get
+  RuntimeState {rsClusterState} <- get
   (v, _propAction, newClusterState, infs) <-
     runPowerStateT asPeer rsClusterState (action <* acknowledge)
   liftIO . ($ newClusterState) . rsNotify =<< get
-  put state {rsClusterState = newClusterState}
+  modify (\state -> state {rsClusterState = newClusterState})
   respondToWaiting infs
   return v
 
