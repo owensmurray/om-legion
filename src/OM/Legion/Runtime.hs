@@ -31,7 +31,6 @@ module OM.Legion.Runtime (
   broadcast,
   eject,
   getSelf,
-  getAsync,
 
   -- * Other Exports.
   ClusterId(..),
@@ -70,7 +69,7 @@ import Data.Void (Void)
 import GHC.Generics (Generic)
 import Network.Socket (PortNumber)
 import OM.Deploy.Types (NodeName(NodeName), unNodeName)
-import OM.Fork (Actor, actorChan, Msg, Responder, respond)
+import OM.Fork (Actor, actorChan, Msg, Responder, Background)
 import OM.Legion.Conduit (chanToSink)
 import OM.Legion.UUID (getUUID)
 import OM.Logging (withPrefix)
@@ -279,8 +278,8 @@ getSelf = rSelf
   to wait for it to complete (which should never happen except in the
   case of an error).
 -}
-getAsync :: Runtime e -> Async Void
-getAsync = rAsync
+instance Background (Runtime e) where
+  getAsync = rAsync
 
 
 {- | The types of messages that can be sent to the runtime. -}
@@ -884,5 +883,10 @@ peerMessagePort = 5288
 {- | The join message port  -}
 joinMessagePort :: PortNumber
 joinMessagePort = 5289
+
+
+{- | Like 'Fork.respond', but returns '()'. -}
+respond :: (MonadIO m) => Responder a -> a -> m ()
+respond responder = void . Fork.respond responder
 
 
