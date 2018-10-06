@@ -606,12 +606,12 @@ updateClusterAs :: (
   -> StateT (RuntimeState e) m a
 updateClusterAs asPeer action = do
   state@RuntimeState {rsClusterState} <- get
-  runPowerStateT asPeer rsClusterState (action <* acknowledge) >>=
-    \(v, _propAction, newClusterState, infs) -> do
-      liftIO . ($ newClusterState) . rsNotify =<< get
-      put state {rsClusterState = newClusterState}
-      respondToWaiting infs
-      return v
+  (v, _propAction, newClusterState, infs) <-
+    runPowerStateT asPeer rsClusterState (action <* acknowledge)
+  liftIO . ($ newClusterState) . rsNotify =<< get
+  put state {rsClusterState = newClusterState}
+  respondToWaiting infs
+  return v
 
 
 {- | Wait on a consistent response for the given state id. -}
