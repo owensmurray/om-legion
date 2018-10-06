@@ -31,7 +31,6 @@ module OM.Legion.Runtime (
   broadcast,
   eject,
   getSelf,
-  getAsync,
 
   -- * Other Exports.
   ClusterId(..),
@@ -70,7 +69,7 @@ import Data.Void (Void)
 import GHC.Generics (Generic)
 import Network.Socket (PortNumber)
 import OM.Deploy.Types (NodeName(NodeName), unNodeName)
-import OM.Fork (Actor, actorChan, Msg, Responder, respond)
+import OM.Fork (Actor, actorChan, Msg, Responder, Background)
 import OM.Legion.Conduit (chanToSink)
 import OM.Legion.UUID (getUUID)
 import OM.Logging (withPrefix)
@@ -127,7 +126,8 @@ data RuntimeState e = RuntimeState {
 {- | Fork the Legion runtime system. -}
 forkLegionary :: (
       Binary (State e), Binary e, Default (State e), Eq e, Event e,
-      MonadCatch m, MonadLoggerIO m, Show e, ToJSON (State e), ToJSON e
+      MonadCatch m, MonadLoggerIO m, Show e, ToJSON (State e), ToJSON e,
+      Show (Output e)
     )
   => Peer {- ^ The peer being launched. -}
   -> (ByteString -> IO ByteString) {- ^ Handle a user call request. -}
@@ -167,7 +167,7 @@ forkLegionary
       }
   where
     logPrefix :: Peer -> LogStr
-    logPrefix self_ = "[" <> showt self_ <> "]"
+    logPrefix self_ = "[" <> showt self_ <> "] "
 
 
 {- | A handle on the Legion runtime. -}
@@ -279,8 +279,8 @@ getSelf = rSelf
   to wait for it to complete (which should never happen except in the
   case of an error).
 -}
-getAsync :: Runtime e -> Async Void
-getAsync = rAsync
+instance Background (Runtime e) where
+  getAsync = rAsync
 
 
 {- | The types of messages that can be sent to the runtime. -}
@@ -365,6 +365,7 @@ executeRuntime
               handleMessages = do
                 msg <- liftIO $ readChan (unRChan runtimeChan)
                 RuntimeState {rsClusterState = cluster1} <- get
+                $(logDebug) $ "Handling: " <> showt msg
                 handleRuntimeMessage msg
                 RuntimeState {rsClusterState = cluster2} <- get
                 when (cluster1 /= cluster2)
@@ -461,10 +462,12 @@ handleRuntimeMessage (ApplyFast e responder) =
     (o, _sid) <- event e
     respond responder o
 
-handleRuntimeMessage (ApplyConsistent e responder) =
+handleRuntimeMessage (ApplyConsistent e responder) = do
   updateCluster $ do
     (_v, sid) <- event e
     lift (waitOn sid responder)
+  rs <- get
+  $(logDebug) $ "Waiting: " <> showt (rsWaiting rs)
 
 handleRuntimeMessage (Eject peer) =
   updateClusterAs peer $ disassociate peer
@@ -606,13 +609,13 @@ updateClusterAs :: (
   -> PowerStateT ClusterId Peer e (StateT (RuntimeState e) m) a
   -> StateT (RuntimeState e) m a
 updateClusterAs asPeer action = do
-  state@RuntimeState {rsClusterState} <- get
-  runPowerStateT asPeer rsClusterState (action <* acknowledge) >>=
-    \(v, _propAction, newClusterState, infs) -> do
-      liftIO . ($ newClusterState) . rsNotify =<< get
-      put state {rsClusterState = newClusterState}
-      respondToWaiting infs
-      return v
+  RuntimeState {rsClusterState} <- get
+  (v, _propAction, newClusterState, infs) <-
+    runPowerStateT asPeer rsClusterState (action <* acknowledge)
+  liftIO . ($ newClusterState) . rsNotify =<< get
+  modify (\state -> state {rsClusterState = newClusterState})
+  respondToWaiting infs
+  return v
 
 
 {- | Wait on a consistent response for the given state id. -}
@@ -742,10 +745,13 @@ createConnection peer = do
   Respond to event applications that are waiting on a consistent result,
   if such a result is available.
 -}
-respondToWaiting :: (MonadIO m)
+respondToWaiting :: (MonadLoggerIO m, Show (Output e))
   => Map (StateId Peer) (Output e)
   -> StateT (RuntimeState e) m ()
-respondToWaiting available =
+respondToWaiting available = do
+    rs <- get
+    $(logDebug)
+      $ "Responding to: " <> showt (available, Map.keysSet (rsWaiting rs))
     mapM_ respondToOne (Map.toList available)
   where
     respondToOne :: (MonadIO m)
@@ -867,7 +873,7 @@ nextMessageId (M sequenceId ord) = M sequenceId (ord + 1)
 
 type Constraints e = (
     Binary (State e), Binary e, Default (State e), Eq e, Event e, Show e,
-    ToJSON (State e), ToJSON e
+    ToJSON (State e), ToJSON e, Show (Output e)
   )
 
 
@@ -884,5 +890,10 @@ peerMessagePort = 5288
 {- | The join message port  -}
 joinMessagePort :: PortNumber
 joinMessagePort = 5289
+
+
+{- | Like 'Fork.respond', but returns '()'. -}
+respond :: (MonadIO m) => Responder a -> a -> m ()
+respond responder = void . Fork.respond responder
 
 
