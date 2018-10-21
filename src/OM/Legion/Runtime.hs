@@ -671,7 +671,9 @@ sendPeer msg peer = do
         Left err -> do
           $(logWarn) $ "Failure sending to peer: " <> showt (peer, err)
           disconnect peer
-        Right () -> return ()
+        Right () -> do
+          $(logDebug) $ "Sent message to peer: " <> showt (peer, msg)
+          return ()
 
 
 {- | Disconnect the connection to a peer. -}
