@@ -127,7 +127,7 @@ data RuntimeState e = RuntimeState {
 forkLegionary :: (
       Binary (State e), Binary e, Default (State e), Eq e, Event e,
       MonadCatch m, MonadLoggerIO m, Show e, ToJSON (State e), ToJSON e,
-      Show (Output e)
+      Show (Output e), Eq (Output e), ToJSON (Output e), Binary (Output e)
     )
   => Peer {- ^ The peer being launched. -}
   -> (ByteString -> IO ByteString) {- ^ Handle a user call request. -}
@@ -298,7 +298,7 @@ data RuntimeMessage e
   | SendCallResponse Peer MessageId ByteString
   | HandleCallResponse Peer MessageId ByteString
   | Resend (Responder ())
-  deriving (Show)
+deriving instance (Show e, Show (Output e)) => Show (RuntimeMessage e)
 
 
 {- | The types of messages that can be sent from one peer to another. -}
@@ -311,8 +311,9 @@ data PeerMessage e
     {- ^ Send a user cast message from one peer to another. -}
   | PMCallResponse Peer MessageId ByteString
     {- ^ Send a response to a user call message. -}
-  deriving (Generic, Show)
-instance (Binary e) => Binary (PeerMessage e)
+  deriving (Generic)
+deriving instance (Show e, Show (Output e)) => Show (PeerMessage e)
+instance (Binary e, Binary (Output e)) => Binary (PeerMessage e)
 
 
 {- | An opaque value that identifies a cluster participant. -}
@@ -775,7 +776,10 @@ data StartupMode e
   | JoinCluster AddressDescription
     {- ^ Indicates that the node should try to join an existing cluster. -}
   | Recover (PowerState ClusterId Peer e)
-deriving instance (ToJSON e, ToJSON (State e)) => Show (StartupMode e)
+deriving instance
+    (ToJSON e, ToJSON (State e), ToJSON (Output e))
+  =>
+    Show (StartupMode e)
 
 
 {- | Initialize the runtime state. -}
@@ -875,7 +879,8 @@ nextMessageId (M sequenceId ord) = M sequenceId (ord + 1)
 
 type Constraints e = (
     Binary (State e), Binary e, Default (State e), Eq e, Event e, Show e,
-    ToJSON (State e), ToJSON e, Show (Output e)
+    ToJSON (State e), ToJSON e, Show (Output e), Eq (Output e), ToJSON
+    (Output e), Binary (Output e)
   )
 
 
