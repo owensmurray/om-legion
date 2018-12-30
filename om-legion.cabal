@@ -2,7 +2,7 @@
 -- documentation, see http://haskell.org/cabal/users-guide/
 
 name:                om-legion
-version:             5.0.0.1
+version:             5.0.0.2
 synopsis:            Core Legion Framework.
 -- description:         
 homepage:            https://github.com/owensmurray/om-legion2
@@ -26,27 +26,27 @@ library
     OM.Legion.UUID
   -- other-extensions:    
   build-depends:
-    aeson              >= 1.2.3.0  && < 1.4,
+    aeson              >= 1.4.2.0  && < 1.5,
     async              >= 2.1.1.1  && < 2.3,
-    base               >= 4.9      && < 4.12,
+    base               >= 4.12     && < 4.13,
     binary             >= 0.8.3.0  && < 0.9,
     bytestring         >= 0.10.8.1 && < 0.11,
     conduit            >= 1.3.0.2  && < 1.4,
-    containers         >= 0.5.7.1  && < 0.6,
+    containers         >= 0.6.0.1  && < 0.7,
     data-default-class >= 0.1.2.0  && < 0.2,
-    http-api-data      >= 0.3.7.1  && < 0.4,
+    http-api-data      >= 0.4      && < 0.5,
     mmorph             >= 1.1.0    && < 1.2,
     monad-logger       >= 0.3.25.1 && < 0.4,
-    network            >= 2.6.3.6  && < 2.7,
+    network            >= 2.8.0.0  && < 2.9,
     om-deploy-types    >= 1.3.0.0  && < 1.4,
-    om-fork            >= 0.4.0.0  && < 0.5,
+    om-fork            >= 0.5.0.1  && < 0.6,
     om-logging         >= 0.2.0.2  && < 0.3,
     om-powerstate      >= 4.0.0.0  && < 4.1,
     om-show            >= 0.1.0.2  && < 0.2,
     om-socket          >= 0.7.0.0  && < 0.8,
     random-shuffle     >= 0.0.4    && < 0.1,
     safe-exceptions    >= 0.1.6.0  && < 0.2,
-    stm                >= 2.4.4.1  && < 2.5,
+    stm                >= 2.5.0.0  && < 2.6,
     text               >= 1.2.2.2  && < 1.3,
     transformers       >= 0.5.2.0  && < 0.6,
     uuid               >= 1.3.13   && < 1.4
