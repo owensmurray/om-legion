@@ -329,7 +329,7 @@ instance FromHttpApiData Peer where
 newtype ClusterId = ClusterId {
     unClusterId :: Text
   }
-  deriving (Binary, Show, Eq, ToJSON)
+  deriving (Binary, Show, Eq, ToJSON, IsString)
 
 
 {- |
