@@ -471,11 +471,16 @@ handleRuntimeMessage (Merge other) =
       Right () -> return ()
 
 handleRuntimeMessage (Join (JoinRequest peer) responder) = do
+  $(logInfo) $ "Handling join from peer: " <> showt peer
   sid <- updateCluster (disassociate peer >> participate peer)
   RuntimeState {rsClusterState} <- get
   if sid <= infimumId rsClusterState
-    then respond responder (JoinOk rsClusterState)
-    else modify (\s -> s {rsJoins = Map.insert sid responder (rsJoins s)})
+    then do
+      $(logInfo) $ "Join immediately with: " <> showt rsClusterState
+      respond responder (JoinOk rsClusterState)
+    else do
+      $(logInfo) "Join delayed."
+      modify (\s -> s {rsJoins = Map.insert sid responder (rsJoins s)})
 
 handleRuntimeMessage (ReadState responder) =
   respond responder . rsClusterState =<< get
@@ -798,11 +803,12 @@ makeRuntimeState
     (JoinCluster addr)
   = do
     {- Join a cluster an existing cluster. -}
-    $(logInfo) "Trying to join an existing cluster."
+    $(logInfo) $ "Trying to join an existing cluster on " <> showt addr
     JoinOk cluster <-
       requestJoin
       . JoinRequest
       $ self
+    $(logInfo) $ "Join response with cluster: " <> showt cluster
     makeRuntimeState self notify (Recover cluster)
   where
     requestJoin :: (Constraints e, MonadLoggerIO m)
