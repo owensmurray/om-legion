@@ -19,11 +19,10 @@ module OM.Legion (
   -- * Inspecting the current state.
   readState,
   getSelf,
-  getClusterId,
+  getClusterName,
 
   -- * Other types.
   Runtime,
-  ClusterId(..),
   Peer(..),
   joinMessagePort,
 ) where
@@ -31,7 +30,7 @@ module OM.Legion (
 
 import OM.Legion.Runtime (forkLegionary, StartupMode(NewCluster,
   JoinCluster, Recover), Runtime, applyFast, applyConsistent, readState,
-  ClusterId(ClusterId, unClusterId), Peer(Peer, unPeer), call, cast,
-  broadcall, broadcast, getSelf, eject, getClusterId, joinMessagePort)
+  Peer(Peer, unPeer), call, cast, broadcall, broadcast, getSelf, eject,
+  getClusterName, joinMessagePort)
 
 
