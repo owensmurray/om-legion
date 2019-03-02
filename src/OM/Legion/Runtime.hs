@@ -74,7 +74,7 @@ import OM.Logging (withPrefix)
 import OM.PowerState (PowerState, Event, StateId, projParticipants,
   EventPack, events, Output, State, infimumId)
 import OM.PowerState.Monad (event, acknowledge, runPowerStateT, merge,
-  PowerStateT, disassociate, participate)
+  PowerStateT, disassociate, participate, acknowledgeAs)
 import OM.Show (showt)
 import OM.Socket (connectServer, AddressDescription(AddressDescription),
   openEgress, Endpoint(Endpoint), openIngress, openServer)
@@ -471,11 +471,20 @@ handleRuntimeMessage (Merge other) =
       Right () -> return ()
 
 handleRuntimeMessage (Join (JoinRequest peer) responder) = do
-  sid <- updateCluster (disassociate peer >> participate peer)
+  $(logInfo) $ "Handling join from peer: " <> showt peer
+  sid <- updateCluster (do
+      disassociate peer
+      acknowledgeAs peer
+      participate peer
+    )
   RuntimeState {rsClusterState} <- get
   if sid <= infimumId rsClusterState
-    then respond responder (JoinOk rsClusterState)
-    else modify (\s -> s {rsJoins = Map.insert sid responder (rsJoins s)})
+    then do
+      $(logInfo) $ "Join immediately with: " <> showt rsClusterState
+      respond responder (JoinOk rsClusterState)
+    else do
+      $(logInfo) "Join delayed."
+      modify (\s -> s {rsJoins = Map.insert sid responder (rsJoins s)})
 
 handleRuntimeMessage (ReadState responder) =
   respond responder . rsClusterState =<< get
@@ -798,11 +807,12 @@ makeRuntimeState
     (JoinCluster addr)
   = do
     {- Join a cluster an existing cluster. -}
-    $(logInfo) "Trying to join an existing cluster."
+    $(logInfo) $ "Trying to join an existing cluster on " <> showt addr
     JoinOk cluster <-
       requestJoin
       . JoinRequest
       $ self
+    $(logInfo) $ "Join response with cluster: " <> showt cluster
     makeRuntimeState self notify (Recover cluster)
   where
     requestJoin :: (Constraints e, MonadLoggerIO m)
