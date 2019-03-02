@@ -74,7 +74,7 @@ import OM.Logging (withPrefix)
 import OM.PowerState (PowerState, Event, StateId, projParticipants,
   EventPack, events, Output, State, infimumId)
 import OM.PowerState.Monad (event, acknowledge, runPowerStateT, merge,
-  PowerStateT, disassociate, participate)
+  PowerStateT, disassociate, participate, acknowledgeAs)
 import OM.Show (showt)
 import OM.Socket (connectServer, AddressDescription(AddressDescription),
   openEgress, Endpoint(Endpoint), openIngress, openServer)
@@ -472,7 +472,11 @@ handleRuntimeMessage (Merge other) =
 
 handleRuntimeMessage (Join (JoinRequest peer) responder) = do
   $(logInfo) $ "Handling join from peer: " <> showt peer
-  sid <- updateCluster (disassociate peer >> participate peer)
+  sid <- updateCluster (do
+      disassociate peer
+      acknowledgeAs peer
+      participate peer
+    )
   RuntimeState {rsClusterState} <- get
   if sid <= infimumId rsClusterState
     then do
