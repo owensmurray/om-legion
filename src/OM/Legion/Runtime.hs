@@ -33,9 +33,8 @@ module OM.Legion.Runtime (
   getSelf,
 
   -- * Other Exports.
-  ClusterId(..),
   Peer(..),
-  getClusterId,
+  getClusterName,
   joinMessagePort,
 ) where
 
@@ -63,12 +62,11 @@ import Data.Map (Map)
 import Data.Monoid ((<>))
 import Data.Set (Set, (\\))
 import Data.String (IsString)
-import Data.Text (Text)
 import Data.UUID (UUID)
 import Data.Void (Void)
 import GHC.Generics (Generic)
 import Network.Socket (PortNumber)
-import OM.Deploy.Types (NodeName(NodeName), unNodeName)
+import OM.Deploy.Types (NodeName(NodeName), unNodeName, ClusterName)
 import OM.Fork (Actor, actorChan, Msg, Responder, Background)
 import OM.Legion.Conduit (chanToSink)
 import OM.Legion.UUID (getUUID)
@@ -91,7 +89,7 @@ import qualified OM.PowerState as PS
 {- | The Legionary runtime state. -}
 data RuntimeState e = RuntimeState {
             rsSelf :: Peer,
-    rsClusterState :: PowerState ClusterId Peer e,
+    rsClusterState :: PowerState ClusterName Peer e,
      rsConnections :: Map
                       Peer
                       (PeerMessage e -> StateT (RuntimeState e) IO ()),
@@ -104,7 +102,7 @@ data RuntimeState e = RuntimeState {
                         Responder (Map Peer ByteString)
                       ),
           rsNextId :: MessageId,
-          rsNotify :: PowerState ClusterId Peer e -> IO (),
+          rsNotify :: PowerState ClusterName Peer e -> IO (),
            rsJoins :: Map
                       (StateId Peer)
                       (Responder (JoinResponse e))
@@ -132,7 +130,7 @@ forkLegionary :: (
   => Peer {- ^ The peer being launched. -}
   -> (ByteString -> IO ByteString) {- ^ Handle a user call request. -}
   -> (ByteString -> IO ()) {- ^ Handle a user cast message. -}
-  -> (Peer -> PowerState ClusterId Peer e -> IO ())
+  -> (Peer -> PowerState ClusterName Peer e -> IO ())
      {- ^ Callback when the cluster-wide powerstate changes. -}
   -> StartupMode e
      {- ^
@@ -157,7 +155,7 @@ forkLegionary
         rts
         runtimeChan
     let
-      clusterId :: ClusterId
+      clusterId :: ClusterName
       clusterId = PS.origin (rsClusterState rts)
     return Runtime {
              rChan = runtimeChan,
@@ -175,7 +173,7 @@ data Runtime e = Runtime {
          rChan :: RChan e,
          rSelf :: Peer,
         rAsync :: Async Void,
-    rClusterId :: ClusterId
+    rClusterId :: ClusterName
   }
 instance Actor (Runtime e) where
   type Msg (Runtime e) = RuntimeMessage e
@@ -220,7 +218,7 @@ applyConsistent runtime e = Fork.call runtime (ApplyConsistent e)
 {- | Read the current powerstate value. -}
 readState :: (MonadIO m)
   => Runtime e
-  -> m (PowerState ClusterId Peer e)
+  -> m (PowerState ClusterName Peer e)
 readState runtime = Fork.call runtime ReadState
 
 
@@ -288,9 +286,9 @@ data RuntimeMessage e
   = ApplyFast e (Responder (Output e))
   | ApplyConsistent e (Responder (Output e))
   | Eject Peer
-  | Merge (EventPack ClusterId Peer e)
+  | Merge (EventPack ClusterName Peer e)
   | Join JoinRequest (Responder (JoinResponse e))
-  | ReadState (Responder (PowerState ClusterId Peer e))
+  | ReadState (Responder (PowerState ClusterName Peer e))
   | Call Peer ByteString (Responder ByteString)
   | Cast Peer ByteString
   | Broadcall ByteString (Responder (Map Peer ByteString))
@@ -303,7 +301,7 @@ deriving instance (Show e, Show (Output e)) => Show (RuntimeMessage e)
 
 {- | The types of messages that can be sent from one peer to another. -}
 data PeerMessage e
-  = PMMerge (EventPack ClusterId Peer e)
+  = PMMerge (EventPack ClusterName Peer e)
     {- ^ Send a powerstate merge. -}
   | PMCall Peer MessageId ByteString
     {- ^ Send a user call message from one peer to another. -}
@@ -323,13 +321,6 @@ newtype Peer = Peer {
   deriving newtype (Eq, Ord, Show, ToJSONKey, ToJSON, Binary, IsString)
 instance FromHttpApiData Peer where
   parseUrlPiece = fmap (Peer . NodeName) . parseUrlPiece
-
-
-{- | An opaque value that identifies a cluster. -}
-newtype ClusterId = ClusterId {
-    unClusterId :: Text
-  }
-  deriving (Binary, Show, Eq, ToJSON, IsString)
 
 
 {- |
@@ -591,7 +582,7 @@ newMessageId = do
 updateCluster :: (
       Constraints e, MonadCatch m, MonadLoggerIO m
     )
-  => PowerStateT ClusterId Peer e (StateT (RuntimeState e) m) a
+  => PowerStateT ClusterName Peer e (StateT (RuntimeState e) m) a
   -> StateT (RuntimeState e) m a
 updateCluster action = do
   RuntimeState {rsSelf} <- get
@@ -607,7 +598,7 @@ updateClusterAs :: (
       Constraints e, MonadCatch m, MonadLoggerIO m
     )
   => Peer
-  -> PowerStateT ClusterId Peer e (StateT (RuntimeState e) m) a
+  -> PowerStateT ClusterName Peer e (StateT (RuntimeState e) m) a
   -> StateT (RuntimeState e) m a
 updateClusterAs asPeer action = do
   RuntimeState {rsClusterState} <- get
@@ -771,11 +762,11 @@ respondToWaiting available = do
 
 {- | This defines the various ways a node can be spun up. -}
 data StartupMode e
-  = NewCluster ClusterId
+  = NewCluster ClusterName
     {- ^ Indicates that we should bootstrap a new cluster at startup. -}
   | JoinCluster AddressDescription
     {- ^ Indicates that the node should try to join an existing cluster. -}
-  | Recover (PowerState ClusterId Peer e)
+  | Recover (PowerState ClusterName Peer e)
 deriving instance
     (ToJSON e, ToJSON (State e), ToJSON (Output e))
   =>
@@ -785,7 +776,7 @@ deriving instance
 {- | Initialize the runtime state. -}
 makeRuntimeState :: (Constraints e, MonadLoggerIO m)
   => Peer
-  -> (Peer -> PowerState ClusterId Peer e -> IO ())
+  -> (Peer -> PowerState ClusterName Peer e -> IO ())
      {- ^ Callback when the cluster-wide powerstate changes. -}
   -> StartupMode e
   -> m (RuntimeState e)
@@ -846,7 +837,7 @@ instance Binary JoinRequest
 
 {- | The response to a JoinRequest message -}
 newtype JoinResponse e
-  = JoinOk (PowerState ClusterId Peer e)
+  = JoinOk (PowerState ClusterName Peer e)
   deriving (Generic)
 deriving instance (Constraints e) => Show (JoinResponse e)
 instance (Constraints e) => Binary (JoinResponse e)
@@ -884,9 +875,9 @@ type Constraints e = (
   )
 
 
-{- | Obtain the 'ClusterId'. -}
-getClusterId :: Runtime e -> ClusterId
-getClusterId = rClusterId
+{- | Obtain the 'ClusterName'. -}
+getClusterName :: Runtime e -> ClusterName
+getClusterName = rClusterId
 
 
 {- | The peer message port. -}
