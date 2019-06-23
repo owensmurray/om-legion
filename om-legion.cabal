@@ -40,7 +40,7 @@ library
     network            >= 2.8.0.0  && < 2.9,
     om-deploy-types    >= 1.4.0.0  && < 1.5,
     om-fork            >= 0.5.0.1  && < 0.6,
-    om-logging         >= 0.2.0.2  && < 0.3,
+    om-logging         >= 0.3.0.0  && < 0.4,
     om-powerstate      >= 4.0.0.0  && < 4.1,
     om-show            >= 0.1.0.2  && < 0.2,
     om-socket          >= 0.7.0.0  && < 0.8,
