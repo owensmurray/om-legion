@@ -89,36 +89,36 @@ import qualified OM.PowerState as PS
 
 {- | The Legionary runtime state. -}
 data RuntimeState e = RuntimeState {
-            rsSelf :: Peer,
-    rsClusterState :: PowerState ClusterName Peer e,
-     rsConnections :: Map
-                      Peer
-                      (PeerMessage e -> StateT (RuntimeState e) IO ()),
-         rsWaiting :: Map (StateId Peer) (Responder (Output e)),
-           rsCalls :: Map MessageId (Responder ByteString),
-      rsBroadcalls :: Map
-                      MessageId
-                      (
-                        Map Peer (Maybe ByteString),
-                        Responder (Map Peer ByteString)
-                      ),
-          rsNextId :: MessageId,
-          rsNotify :: PowerState ClusterName Peer e -> IO (),
-           rsJoins :: Map
-                      (StateId Peer)
-                      (Responder (JoinResponse e))
-                      {- ^
-                        The infimum of the powerstate we send to
-                        a new participant must have moved past the
-                        participation event itself. In other words,
-                        the join must be totally consistent across the
-                        cluster. The reason is that we can't make the
-                        new participant responsible for applying events
-                        that occur before it joined the cluster, because
-                        it has no way to ensure that it can collect all
-                        such events.  Therefore, this field tracks the
-                        outstanding joins until they become consistent.
-                      -}
+              rsSelf :: Peer,
+      rsClusterState :: PowerState ClusterName Peer e,
+       rsConnections :: Map
+                        Peer
+                        (PeerMessage e -> StateT (RuntimeState e) IO ()),
+           rsWaiting :: Map (StateId Peer) (Responder (Output e)),
+             rsCalls :: Map MessageId (Responder ByteString),
+        rsBroadcalls :: Map
+                        MessageId
+                        (
+                          Map Peer (Maybe ByteString),
+                          Responder (Map Peer ByteString)
+                        ),
+            rsNextId :: MessageId,
+            rsNotify :: PowerState ClusterName Peer e -> IO (),
+             rsJoins :: Map
+                        (StateId Peer)
+                        (Responder (JoinResponse e))
+                        {- ^
+                          The infimum of the powerstate we send to
+                          a new participant must have moved past the
+                          participation event itself. In other words,
+                          the join must be totally consistent across the
+                          cluster. The reason is that we can't make the
+                          new participant responsible for applying events
+                          that occur before it joined the cluster, because
+                          it has no way to ensure that it can collect all
+                          such events.  Therefore, this field tracks the
+                          outstanding joins until they become consistent.
+                        -}
   }
 
 
@@ -297,7 +297,11 @@ data RuntimeMessage e
   | SendCallResponse Peer MessageId ByteString
   | HandleCallResponse Peer MessageId ByteString
   | Resend (Responder ())
-deriving instance (Show e, Show (Output e)) => Show (RuntimeMessage e)
+deriving instance (
+    Show e,
+    Show (Output e)
+  )
+  => Show (RuntimeMessage e)
 
 
 {- | The types of messages that can be sent from one peer to another. -}
@@ -311,7 +315,10 @@ data PeerMessage e
   | PMCallResponse Peer MessageId ByteString
     {- ^ Send a response to a user call message. -}
   deriving (Generic)
-deriving instance (Show e, Show (Output e)) => Show (PeerMessage e)
+deriving instance (
+    Show e, Show (Output e)
+  )
+  => Show (PeerMessage e)
 instance (Binary e, Binary (Output e)) => Binary (PeerMessage e)
 
 
@@ -635,7 +642,11 @@ waitOn sid responder =
 propagate :: (Constraints e, MonadCatch m, MonadLoggerIO m)
   => StateT (RuntimeState e) m ()
 propagate = do
-    (self, cluster) <- (rsSelf &&& rsClusterState) <$> get
+    (self, cluster) <-
+      (
+        rsSelf
+        &&& rsClusterState
+      ) <$> get
     let
       targets = Set.delete self $
         PS.allParticipants cluster
