@@ -344,7 +344,9 @@ instance (Binary e, Binary (Output e), Binary (State e)) => Binary (PeerMessage 
 newtype Peer = Peer {
     unPeer :: NodeName
   }
-  deriving newtype (Eq, Ord, Show, ToJSONKey, ToJSON, Binary, IsString)
+  deriving newtype (
+    Eq, Ord, Show, ToJSONKey, ToJSON, Binary, IsString
+  )
 instance FromHttpApiData Peer where
   parseUrlPiece = fmap (Peer . NodeName) . parseUrlPiece
 
