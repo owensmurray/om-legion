@@ -39,6 +39,7 @@ module OM.Legion.Runtime (
 ) where
 
 
+import Control.Arrow ((&&&))
 import Control.Concurrent (Chan, writeChan, newChan, threadDelay,
   readChan)
 import Control.Concurrent.Async (Async, async, race_)
@@ -634,14 +635,14 @@ waitOn sid responder =
 propagate :: (Constraints e, MonadCatch m, MonadLoggerIO m)
   => StateT (RuntimeState e) m ()
 propagate = do
-    RuntimeState {rsSelf, rsClusterState} <- get
+    (self, cluster) <- (rsSelf &&& rsClusterState) <$> get
     let
-      targets = Set.delete rsSelf $
-        PS.allParticipants rsClusterState
+      targets = Set.delete self $
+        PS.allParticipants cluster
 
     liftIO (shuffleM (Set.toList targets)) >>= \case
       [] -> return ()
-      target:_ -> sendPeer (PMMerge (events rsClusterState)) target
+      target:_ -> sendPeer (PMMerge (events cluster)) target
     disconnectObsolete
   where
     {- |
