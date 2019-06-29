@@ -39,6 +39,7 @@ module OM.Legion.Runtime (
 ) where
 
 
+import Control.Arrow ((&&&))
 import Control.Concurrent (Chan, writeChan, newChan, threadDelay,
   readChan)
 import Control.Concurrent.Async (Async, async, race_)
@@ -58,10 +59,12 @@ import Data.Binary (Binary, Word64)
 import Data.ByteString.Lazy (ByteString)
 import Data.Conduit (runConduit, (.|), awaitForever, Source, yield)
 import Data.Default.Class (Default)
+import Data.Int (Int64)
 import Data.Map (Map)
 import Data.Monoid ((<>))
 import Data.Set (Set, (\\))
 import Data.String (IsString)
+import Data.Time (UTCTime, getCurrentTime, diffUTCTime, DiffTime)
 import Data.UUID (UUID)
 import Data.Void (Void)
 import GHC.Generics (Generic)
@@ -74,50 +77,56 @@ import OM.Logging (withPrefix)
 import OM.PowerState (PowerState, Event, StateId, projParticipants,
   EventPack, events, Output, State, infimumId)
 import OM.PowerState.Monad (event, acknowledge, runPowerStateT, merge,
-  PowerStateT, disassociate, participate, acknowledgeAs)
+  PowerStateT, disassociate, participate, acknowledgeAs, fullMerge)
 import OM.Show (showt)
 import OM.Socket (connectServer, AddressDescription(AddressDescription),
   openEgress, Endpoint(Endpoint), openIngress, openServer)
+import System.Clock (TimeSpec)
 import System.Random.Shuffle (shuffleM)
 import Web.HttpApiData (FromHttpApiData, parseUrlPiece)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import qualified OM.Fork as Fork
 import qualified OM.PowerState as PS
+import qualified System.Clock as Clock
 
 
 {- | The Legionary runtime state. -}
 data RuntimeState e = RuntimeState {
-            rsSelf :: Peer,
-    rsClusterState :: PowerState ClusterName Peer e,
-     rsConnections :: Map
-                      Peer
-                      (PeerMessage e -> StateT (RuntimeState e) IO ()),
-         rsWaiting :: Map (StateId Peer) (Responder (Output e)),
-           rsCalls :: Map MessageId (Responder ByteString),
-      rsBroadcalls :: Map
-                      MessageId
-                      (
-                        Map Peer (Maybe ByteString),
-                        Responder (Map Peer ByteString)
-                      ),
-          rsNextId :: MessageId,
-          rsNotify :: PowerState ClusterName Peer e -> IO (),
-           rsJoins :: Map
-                      (StateId Peer)
-                      (Responder (JoinResponse e))
-                      {- ^
-                        The infimum of the powerstate we send to
-                        a new participant must have moved past the
-                        participation event itself. In other words,
-                        the join must be totally consistent across the
-                        cluster. The reason is that we can't make the
-                        new participant responsible for applying events
-                        that occur before it joined the cluster, because
-                        it has no way to ensure that it can collect all
-                        such events.  Therefore, this field tracks the
-                        outstanding joins until they become consistent.
-                      -}
+              rsSelf :: Peer,
+      rsClusterState :: PowerState ClusterName Peer e,
+       rsConnections :: Map
+                        Peer
+                        (PeerMessage e -> StateT (RuntimeState e) IO ()),
+           rsWaiting :: Map (StateId Peer) (Responder (Output e)),
+             rsCalls :: Map MessageId (Responder ByteString),
+        rsBroadcalls :: Map
+                        MessageId
+                        (
+                          Map Peer (Maybe ByteString),
+                          Responder (Map Peer (Maybe ByteString)),
+                          TimeSpec
+                        ),
+            rsNextId :: MessageId,
+            rsNotify :: PowerState ClusterName Peer e -> IO (),
+             rsJoins :: Map
+                        (StateId Peer)
+                        (Responder (JoinResponse e)),
+                        {- ^
+                          The infimum of the powerstate we send to
+                          a new participant must have moved past the
+                          participation event itself. In other words,
+                          the join must be totally consistent across the
+                          cluster. The reason is that we can't make the
+                          new participant responsible for applying events
+                          that occur before it joined the cluster, because
+                          it has no way to ensure that it can collect all
+                          such events.  Therefore, this field tracks the
+                          outstanding joins until they become consistent.
+                        -}
+     rsCheckpointSid :: StateId Peer,
+    rsCheckpointTime :: UTCTime
+
   }
 
 
@@ -252,9 +261,10 @@ cast runtime target message = Fork.cast runtime (Cast target message)
 -}
 broadcall :: (MonadIO m)
   => Runtime e
+  -> DiffTime {- ^ The timeout. -}
   -> ByteString
-  -> m (Map Peer ByteString)
-broadcall runtime msg = Fork.call runtime (Broadcall msg)
+  -> m (Map Peer (Maybe ByteString))
+broadcall runtime timeout msg = Fork.call runtime (Broadcall timeout msg)
 
 
 {- | Send a user message to all peers, without wating on a response. -}
@@ -287,22 +297,35 @@ data RuntimeMessage e
   | ApplyConsistent e (Responder (Output e))
   | Eject Peer
   | Merge (EventPack ClusterName Peer e)
+  | FullMerge (PowerState ClusterName Peer e)
   | Join JoinRequest (Responder (JoinResponse e))
   | ReadState (Responder (PowerState ClusterName Peer e))
   | Call Peer ByteString (Responder ByteString)
   | Cast Peer ByteString
-  | Broadcall ByteString (Responder (Map Peer ByteString))
+  | Broadcall
+      DiffTime
+      ByteString
+      (Responder (Map Peer (Maybe ByteString)))
   | Broadcast ByteString
   | SendCallResponse Peer MessageId ByteString
   | HandleCallResponse Peer MessageId ByteString
   | Resend (Responder ())
-deriving instance (Show e, Show (Output e)) => Show (RuntimeMessage e)
+deriving instance (
+    Show e,
+    Show (Output e),
+    ToJSON e,
+    ToJSON (State e),
+    ToJSON (Output e)
+  )
+  => Show (RuntimeMessage e)
 
 
 {- | The types of messages that can be sent from one peer to another. -}
 data PeerMessage e
   = PMMerge (EventPack ClusterName Peer e)
     {- ^ Send a powerstate merge. -}
+  | PMFullMerge (PowerState ClusterName Peer e)
+    {- ^ Send a full merge. -}
   | PMCall Peer MessageId ByteString
     {- ^ Send a user call message from one peer to another. -}
   | PMCast ByteString
@@ -310,8 +333,11 @@ data PeerMessage e
   | PMCallResponse Peer MessageId ByteString
     {- ^ Send a response to a user call message. -}
   deriving (Generic)
-deriving instance (Show e, Show (Output e)) => Show (PeerMessage e)
-instance (Binary e, Binary (Output e)) => Binary (PeerMessage e)
+deriving instance (
+    Show e, Show (Output e), ToJSON e, ToJSON (State e), ToJSON (Output e)
+  )
+  => Show (PeerMessage e)
+instance (Binary e, Binary (Output e), Binary (State e)) => Binary (PeerMessage e)
 
 
 {- | An opaque value that identifies a cluster participant. -}
@@ -362,6 +388,7 @@ executeRuntime
                 RuntimeState {rsClusterState = cluster2} <- get
                 when (cluster1 /= cluster2)
                   ($(logDebug) $ "New Cluster State: " <> showt cluster2)
+                handleBroadcallTimeouts
                 handleOutstandingJoins
                 handleMessages
             in
@@ -388,10 +415,14 @@ executeRuntime
           .| awaitForever (\ (msgSource, msg) -> do
               $(logDebug) $ "Handling: " <> showt (msgSource :: Peer, msg)
               case msg of
+                PMFullMerge ps -> yield (FullMerge ps)
                 PMMerge ps -> yield (Merge ps)
-                PMCall source mid callMsg -> liftIO $
-                  sendCallResponse runtimeChan source mid
-                  =<< handleUserCall callMsg
+                PMCall source mid callMsg ->
+                  (liftIO . tryAny) (handleUserCall callMsg) >>= \case
+                    Left err ->
+                      $(logError)
+                        $ "User call handling failed with: " <> showt err
+                    Right v -> sendCallResponse runtimeChan source mid v
                 PMCast castMsg -> liftIO (handleUserCast castMsg)
                 PMCallResponse source mid responseMsg ->
                   yield (HandleCallResponse source mid responseMsg)
@@ -442,6 +473,22 @@ handleOutstandingJoins = do
     ]
 
 
+{- | Handle any broadcall timeouts. -}
+handleBroadcallTimeouts :: (MonadIO m) => StateT (RuntimeState e) m ()
+handleBroadcallTimeouts = do
+  broadcalls <- rsBroadcalls <$> get
+  now <- getTime
+  sequence_ [
+      do
+        respond responder responses
+        modify (\rs -> rs {
+            rsBroadcalls = Map.delete messageId (rsBroadcalls rs)
+          })
+      | (messageId, (responses, responder, expiry)) <- Map.toList broadcalls
+      , now >= expiry
+    ]
+
+
 {- | Execute the incoming messages. -}
 handleRuntimeMessage :: (
       Constraints e, MonadCatch m, MonadLoggerIO m
@@ -467,6 +514,12 @@ handleRuntimeMessage (Eject peer) =
 handleRuntimeMessage (Merge other) =
   updateCluster $
     runExceptT (merge other) >>= \case
+      Left err -> $(logError) $ "Bad cluster merge: " <> showt err
+      Right () -> return ()
+
+handleRuntimeMessage (FullMerge other) =
+  updateCluster $
+    runExceptT (fullMerge other) >>= \case
       Left err -> $(logError) $ "Bad cluster merge: " <> showt err
       Right () -> return ()
 
@@ -507,16 +560,18 @@ handleRuntimeMessage (Call target msg responder) = do
 handleRuntimeMessage (Cast target msg) =
   sendPeer (PMCast msg) target
 
-handleRuntimeMessage (Broadcall msg responder) = do
+handleRuntimeMessage (Broadcall timeout msg responder) = do
+    expiry <- addTime timeout <$> getTime
     mid <- newMessageId
     source <- rsSelf <$> get
-    setBroadcallResponder mid
+    setBroadcallResponder expiry mid
     mapM_ (sendPeer (PMCall source mid msg)) =<< getPeers
   where
     setBroadcallResponder :: (Monad m)
-      => MessageId
+      => TimeSpec
+      -> MessageId
       -> StateT (RuntimeState e) m ()
-    setBroadcallResponder mid = do
+    setBroadcallResponder expiry mid = do
       peers <- getPeers
       state@RuntimeState {rsBroadcalls} <- get
       put state {
@@ -525,7 +580,8 @@ handleRuntimeMessage (Broadcall msg responder) = do
               mid
               (
                 Map.fromList [(peer, Nothing) | peer <- Set.toList peers],
-                responder
+                responder,
+                expiry
               )
               rsBroadcalls
         }
@@ -543,7 +599,7 @@ handleRuntimeMessage (HandleCallResponse source mid msg) = do
     Nothing ->
       case Map.lookup mid rsBroadcalls of
         Nothing -> return ()
-        Just (responses, responder) ->
+        Just (responses, responder, expiry) ->
           let
             responses2 = Map.insert source (Just msg) responses
             response = Map.fromList [
@@ -554,14 +610,14 @@ handleRuntimeMessage (HandleCallResponse source mid msg) = do
           in
             if Set.null (Map.keysSet response \\ peers)
               then do
-                respond responder response
+                respond responder (Just <$> response)
                 put state {
                     rsBroadcalls = Map.delete mid rsBroadcalls
                   }
               else
                 put state {
                     rsBroadcalls =
-                      Map.insert mid (responses2, responder) rsBroadcalls
+                      Map.insert mid (responses2, responder, expiry) rsBroadcalls
                   }
     Just responder -> do
       respond responder msg
@@ -634,14 +690,45 @@ waitOn sid responder =
 propagate :: (Constraints e, MonadCatch m, MonadLoggerIO m)
   => StateT (RuntimeState e) m ()
 propagate = do
-    RuntimeState {rsSelf, rsClusterState} <- get
+    (self, (cluster, (checkSid, checkTime))) <-
+      (
+        rsSelf
+        &&& rsClusterState
+        &&& rsCheckpointSid
+        &&& rsCheckpointTime
+      ) <$> get
     let
-      targets = Set.delete rsSelf $
-        PS.allParticipants rsClusterState
+      targets = Set.delete self $
+        PS.divergent cluster
 
+    now <- liftIO getCurrentTime
     liftIO (shuffleM (Set.toList targets)) >>= \case
       [] -> return ()
-      target:_ -> sendPeer (PMMerge (events rsClusterState)) target
+      target:_ ->
+        {-
+          If it has been more than 10 seconds since progress on the
+          infimum was made, try sending out a full merge instead of just
+          the event pack.
+        -}
+        if infimumId cluster == checkSid && diffUTCTime now checkTime > 10
+          then do
+            $(logWarn)
+              $ "Sending full merge because no progress has been "
+              <> "made on the cluster state."
+            sendPeer (PMFullMerge cluster) target
+            modify (\rs -> rs {rsCheckpointTime = now})
+          else sendPeer (PMMerge (events cluster)) target
+    modify (\rs -> rs {
+        rsCheckpointSid = infimumId cluster,
+        rsCheckpointTime =
+          {-
+            Don't advance the checkpoint time unless the infimum has
+            also advanced.
+          -}
+          if infimumId cluster == checkSid
+            then rsCheckpointTime rs
+            else now
+      })
     disconnectObsolete
   where
     {- |
@@ -825,6 +912,7 @@ makeRuntimeState
     notify
     (Recover clusterState)
   = do
+    now <- liftIO getCurrentTime
     rsNextId <- newSequence
     return RuntimeState {
         rsSelf = self,
@@ -835,7 +923,9 @@ makeRuntimeState
         rsBroadcalls = mempty,
         rsNextId,
         rsNotify = notify self,
-        rsJoins = mempty
+        rsJoins = mempty,
+        rsCheckpointTime = now,
+        rsCheckpointSid = infimumId clusterState
       }
 
 
@@ -903,5 +993,28 @@ joinMessagePort = 5289
 {- | Like 'Fork.respond', but returns '()'. -}
 respond :: (MonadIO m) => Responder a -> a -> m ()
 respond responder = void . Fork.respond responder
+
+
+{- | Add a 'DiffTime' to a 'TimeSpec'. -}
+addTime :: DiffTime -> TimeSpec -> TimeSpec
+addTime diff time =
+  let
+    rat = toRational diff
+
+    secDiff :: Int64
+    secDiff = truncate rat
+
+    nsecDiff :: Int64
+    nsecDiff = truncate ((toRational diff - toRational secDiff) * 1000000000)
+  in
+    Clock.TimeSpec {
+      Clock.sec = Clock.sec time + secDiff,
+      Clock.nsec = Clock.nsec time + nsecDiff
+    }
+
+
+{- | Specialized 'Clock.getTime'. -}
+getTime :: (MonadIO m) => m TimeSpec
+getTime = liftIO $ Clock.getTime Clock.Monotonic
 
 
