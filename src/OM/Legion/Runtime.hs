@@ -59,11 +59,12 @@ import Data.Binary (Binary, Word64)
 import Data.ByteString.Lazy (ByteString)
 import Data.Conduit (runConduit, (.|), awaitForever, Source, yield)
 import Data.Default.Class (Default)
+import Data.Int (Int64)
 import Data.Map (Map)
 import Data.Monoid ((<>))
 import Data.Set (Set, (\\))
 import Data.String (IsString)
-import Data.Time (UTCTime, getCurrentTime, diffUTCTime)
+import Data.Time (UTCTime, getCurrentTime, diffUTCTime, DiffTime)
 import Data.UUID (UUID)
 import Data.Void (Void)
 import GHC.Generics (Generic)
@@ -80,12 +81,14 @@ import OM.PowerState.Monad (event, acknowledge, runPowerStateT, merge,
 import OM.Show (showt)
 import OM.Socket (connectServer, AddressDescription(AddressDescription),
   openEgress, Endpoint(Endpoint), openIngress, openServer)
+import System.Clock (TimeSpec)
 import System.Random.Shuffle (shuffleM)
 import Web.HttpApiData (FromHttpApiData, parseUrlPiece)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import qualified OM.Fork as Fork
 import qualified OM.PowerState as PS
+import qualified System.Clock as Clock
 
 
 {- | The Legionary runtime state. -}
@@ -101,7 +104,8 @@ data RuntimeState e = RuntimeState {
                         MessageId
                         (
                           Map Peer (Maybe ByteString),
-                          Responder (Map Peer ByteString)
+                          Responder (Map Peer (Maybe ByteString)),
+                          TimeSpec
                         ),
             rsNextId :: MessageId,
             rsNotify :: PowerState ClusterName Peer e -> IO (),
@@ -257,9 +261,10 @@ cast runtime target message = Fork.cast runtime (Cast target message)
 -}
 broadcall :: (MonadIO m)
   => Runtime e
+  -> DiffTime {- ^ The timeout. -}
   -> ByteString
-  -> m (Map Peer ByteString)
-broadcall runtime msg = Fork.call runtime (Broadcall msg)
+  -> m (Map Peer (Maybe ByteString))
+broadcall runtime timeout msg = Fork.call runtime (Broadcall timeout msg)
 
 
 {- | Send a user message to all peers, without wating on a response. -}
@@ -297,7 +302,10 @@ data RuntimeMessage e
   | ReadState (Responder (PowerState ClusterName Peer e))
   | Call Peer ByteString (Responder ByteString)
   | Cast Peer ByteString
-  | Broadcall ByteString (Responder (Map Peer ByteString))
+  | Broadcall
+      DiffTime
+      ByteString
+      (Responder (Map Peer (Maybe ByteString)))
   | Broadcast ByteString
   | SendCallResponse Peer MessageId ByteString
   | HandleCallResponse Peer MessageId ByteString
@@ -380,6 +388,7 @@ executeRuntime
                 RuntimeState {rsClusterState = cluster2} <- get
                 when (cluster1 /= cluster2)
                   ($(logDebug) $ "New Cluster State: " <> showt cluster2)
+                handleBroadcallTimeouts
                 handleOutstandingJoins
                 handleMessages
             in
@@ -408,9 +417,12 @@ executeRuntime
               case msg of
                 PMFullMerge ps -> yield (FullMerge ps)
                 PMMerge ps -> yield (Merge ps)
-                PMCall source mid callMsg -> liftIO $
-                  sendCallResponse runtimeChan source mid
-                  =<< handleUserCall callMsg
+                PMCall source mid callMsg ->
+                  (liftIO . tryAny) (handleUserCall callMsg) >>= \case
+                    Left err ->
+                      $(logError)
+                        $ "User call handling failed with: " <> showt err
+                    Right v -> sendCallResponse runtimeChan source mid v
                 PMCast castMsg -> liftIO (handleUserCast castMsg)
                 PMCallResponse source mid responseMsg ->
                   yield (HandleCallResponse source mid responseMsg)
@@ -458,6 +470,22 @@ handleOutstandingJoins = do
   sequence_ [
       respond responder (JoinOk rsClusterState)
       | (_, responder) <- Map.toList consistent
+    ]
+
+
+{- | Handle any broadcall timeouts. -}
+handleBroadcallTimeouts :: (MonadIO m) => StateT (RuntimeState e) m ()
+handleBroadcallTimeouts = do
+  broadcalls <- rsBroadcalls <$> get
+  now <- getTime
+  sequence_ [
+      do
+        respond responder responses
+        modify (\rs -> rs {
+            rsBroadcalls = Map.delete messageId (rsBroadcalls rs)
+          })
+      | (messageId, (responses, responder, expiry)) <- Map.toList broadcalls
+      , now >= expiry
     ]
 
 
@@ -532,16 +560,18 @@ handleRuntimeMessage (Call target msg responder) = do
 handleRuntimeMessage (Cast target msg) =
   sendPeer (PMCast msg) target
 
-handleRuntimeMessage (Broadcall msg responder) = do
+handleRuntimeMessage (Broadcall timeout msg responder) = do
+    expiry <- addTime timeout <$> getTime
     mid <- newMessageId
     source <- rsSelf <$> get
-    setBroadcallResponder mid
+    setBroadcallResponder expiry mid
     mapM_ (sendPeer (PMCall source mid msg)) =<< getPeers
   where
     setBroadcallResponder :: (Monad m)
-      => MessageId
+      => TimeSpec
+      -> MessageId
       -> StateT (RuntimeState e) m ()
-    setBroadcallResponder mid = do
+    setBroadcallResponder expiry mid = do
       peers <- getPeers
       state@RuntimeState {rsBroadcalls} <- get
       put state {
@@ -550,7 +580,8 @@ handleRuntimeMessage (Broadcall msg responder) = do
               mid
               (
                 Map.fromList [(peer, Nothing) | peer <- Set.toList peers],
-                responder
+                responder,
+                expiry
               )
               rsBroadcalls
         }
@@ -568,7 +599,7 @@ handleRuntimeMessage (HandleCallResponse source mid msg) = do
     Nothing ->
       case Map.lookup mid rsBroadcalls of
         Nothing -> return ()
-        Just (responses, responder) ->
+        Just (responses, responder, expiry) ->
           let
             responses2 = Map.insert source (Just msg) responses
             response = Map.fromList [
@@ -579,14 +610,14 @@ handleRuntimeMessage (HandleCallResponse source mid msg) = do
           in
             if Set.null (Map.keysSet response \\ peers)
               then do
-                respond responder response
+                respond responder (Just <$> response)
                 put state {
                     rsBroadcalls = Map.delete mid rsBroadcalls
                   }
               else
                 put state {
                     rsBroadcalls =
-                      Map.insert mid (responses2, responder) rsBroadcalls
+                      Map.insert mid (responses2, responder, expiry) rsBroadcalls
                   }
     Just responder -> do
       respond responder msg
@@ -962,5 +993,28 @@ joinMessagePort = 5289
 {- | Like 'Fork.respond', but returns '()'. -}
 respond :: (MonadIO m) => Responder a -> a -> m ()
 respond responder = void . Fork.respond responder
+
+
+{- | Add a 'DiffTime' to a 'TimeSpec'. -}
+addTime :: DiffTime -> TimeSpec -> TimeSpec
+addTime diff time =
+  let
+    rat = toRational diff
+
+    secDiff :: Int64
+    secDiff = truncate rat
+
+    nsecDiff :: Int64
+    nsecDiff = truncate ((toRational diff - toRational secDiff) * 1000000000)
+  in
+    Clock.TimeSpec {
+      Clock.sec = Clock.sec time + secDiff,
+      Clock.nsec = Clock.nsec time + nsecDiff
+    }
+
+
+{- | Specialized 'Clock.getTime'. -}
+getTime :: (MonadIO m) => m TimeSpec
+getTime = liftIO $ Clock.getTime Clock.Monotonic
 
 
