@@ -54,7 +54,7 @@ import Control.Monad.Morph (hoist)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (runExceptT)
 import Control.Monad.Trans.State (evalStateT, StateT, get, put, modify)
-import Data.Aeson (ToJSON, ToJSONKey)
+import Data.Aeson (ToJSON, ToJSONKey, FromJSONKey)
 import Data.Binary (Binary, Word64)
 import Data.ByteString.Lazy (ByteString)
 import Data.Conduit (runConduit, (.|), awaitForever, Source, yield)
@@ -344,7 +344,9 @@ instance (Binary e, Binary (Output e), Binary (State e)) => Binary (PeerMessage 
 newtype Peer = Peer {
     unPeer :: NodeName
   }
-  deriving newtype (Eq, Ord, Show, ToJSONKey, ToJSON, Binary, IsString)
+  deriving newtype (
+    Eq, Ord, Show, ToJSONKey, ToJSON, Binary, IsString, FromJSONKey
+  )
 instance FromHttpApiData Peer where
   parseUrlPiece = fmap (Peer . NodeName) . parseUrlPiece
 
