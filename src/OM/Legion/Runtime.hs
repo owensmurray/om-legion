@@ -63,6 +63,7 @@ import Data.Map (Map)
 import Data.Monoid ((<>))
 import Data.Set (Set, (\\))
 import Data.String (IsString)
+import Data.Time (UTCTime, getCurrentTime, diffUTCTime)
 import Data.UUID (UUID)
 import Data.Void (Void)
 import GHC.Generics (Generic)
@@ -75,7 +76,7 @@ import OM.Logging (withPrefix)
 import OM.PowerState (PowerState, Event, StateId, projParticipants,
   EventPack, events, Output, State, infimumId)
 import OM.PowerState.Monad (event, acknowledge, runPowerStateT, merge,
-  PowerStateT, disassociate, participate, acknowledgeAs)
+  PowerStateT, disassociate, participate, acknowledgeAs, fullMerge)
 import OM.Show (showt)
 import OM.Socket (connectServer, AddressDescription(AddressDescription),
   openEgress, Endpoint(Endpoint), openIngress, openServer)
@@ -106,7 +107,7 @@ data RuntimeState e = RuntimeState {
             rsNotify :: PowerState ClusterName Peer e -> IO (),
              rsJoins :: Map
                         (StateId Peer)
-                        (Responder (JoinResponse e))
+                        (Responder (JoinResponse e)),
                         {- ^
                           The infimum of the powerstate we send to
                           a new participant must have moved past the
@@ -119,6 +120,9 @@ data RuntimeState e = RuntimeState {
                           such events.  Therefore, this field tracks the
                           outstanding joins until they become consistent.
                         -}
+     rsCheckpointSid :: StateId Peer,
+    rsCheckpointTime :: UTCTime
+
   }
 
 
@@ -288,6 +292,7 @@ data RuntimeMessage e
   | ApplyConsistent e (Responder (Output e))
   | Eject Peer
   | Merge (EventPack ClusterName Peer e)
+  | FullMerge (PowerState ClusterName Peer e)
   | Join JoinRequest (Responder (JoinResponse e))
   | ReadState (Responder (PowerState ClusterName Peer e))
   | Call Peer ByteString (Responder ByteString)
@@ -299,7 +304,10 @@ data RuntimeMessage e
   | Resend (Responder ())
 deriving instance (
     Show e,
-    Show (Output e)
+    Show (Output e),
+    ToJSON e,
+    ToJSON (State e),
+    ToJSON (Output e)
   )
   => Show (RuntimeMessage e)
 
@@ -308,6 +316,8 @@ deriving instance (
 data PeerMessage e
   = PMMerge (EventPack ClusterName Peer e)
     {- ^ Send a powerstate merge. -}
+  | PMFullMerge (PowerState ClusterName Peer e)
+    {- ^ Send a full merge. -}
   | PMCall Peer MessageId ByteString
     {- ^ Send a user call message from one peer to another. -}
   | PMCast ByteString
@@ -316,10 +326,10 @@ data PeerMessage e
     {- ^ Send a response to a user call message. -}
   deriving (Generic)
 deriving instance (
-    Show e, Show (Output e)
+    Show e, Show (Output e), ToJSON e, ToJSON (State e), ToJSON (Output e)
   )
   => Show (PeerMessage e)
-instance (Binary e, Binary (Output e)) => Binary (PeerMessage e)
+instance (Binary e, Binary (Output e), Binary (State e)) => Binary (PeerMessage e)
 
 
 {- | An opaque value that identifies a cluster participant. -}
@@ -396,6 +406,7 @@ executeRuntime
           .| awaitForever (\ (msgSource, msg) -> do
               $(logDebug) $ "Handling: " <> showt (msgSource :: Peer, msg)
               case msg of
+                PMFullMerge ps -> yield (FullMerge ps)
                 PMMerge ps -> yield (Merge ps)
                 PMCall source mid callMsg -> liftIO $
                   sendCallResponse runtimeChan source mid
@@ -475,6 +486,12 @@ handleRuntimeMessage (Eject peer) =
 handleRuntimeMessage (Merge other) =
   updateCluster $
     runExceptT (merge other) >>= \case
+      Left err -> $(logError) $ "Bad cluster merge: " <> showt err
+      Right () -> return ()
+
+handleRuntimeMessage (FullMerge other) =
+  updateCluster $
+    runExceptT (fullMerge other) >>= \case
       Left err -> $(logError) $ "Bad cluster merge: " <> showt err
       Right () -> return ()
 
@@ -642,18 +659,45 @@ waitOn sid responder =
 propagate :: (Constraints e, MonadCatch m, MonadLoggerIO m)
   => StateT (RuntimeState e) m ()
 propagate = do
-    (self, cluster) <-
+    (self, (cluster, (checkSid, checkTime))) <-
       (
         rsSelf
         &&& rsClusterState
+        &&& rsCheckpointSid
+        &&& rsCheckpointTime
       ) <$> get
     let
       targets = Set.delete self $
-        PS.allParticipants cluster
+        PS.divergent cluster
 
+    now <- liftIO getCurrentTime
     liftIO (shuffleM (Set.toList targets)) >>= \case
       [] -> return ()
-      target:_ -> sendPeer (PMMerge (events cluster)) target
+      target:_ ->
+        {-
+          If it has been more than 10 seconds since progress on the
+          infimum was made, try sending out a full merge instead of just
+          the event pack.
+        -}
+        if infimumId cluster == checkSid && diffUTCTime now checkTime > 10
+          then do
+            $(logWarn)
+              $ "Sending full merge because no progress has been "
+              <> "made on the cluster state."
+            sendPeer (PMFullMerge cluster) target
+            modify (\rs -> rs {rsCheckpointTime = now})
+          else sendPeer (PMMerge (events cluster)) target
+    modify (\rs -> rs {
+        rsCheckpointSid = infimumId cluster,
+        rsCheckpointTime =
+          {-
+            Don't advance the checkpoint time unless the infimum has
+            also advanced.
+          -}
+          if infimumId cluster == checkSid
+            then rsCheckpointTime rs
+            else now
+      })
     disconnectObsolete
   where
     {- |
@@ -837,6 +881,7 @@ makeRuntimeState
     notify
     (Recover clusterState)
   = do
+    now <- liftIO getCurrentTime
     rsNextId <- newSequence
     return RuntimeState {
         rsSelf = self,
@@ -847,7 +892,9 @@ makeRuntimeState
         rsBroadcalls = mempty,
         rsNextId,
         rsNotify = notify self,
-        rsJoins = mempty
+        rsJoins = mempty,
+        rsCheckpointTime = now,
+        rsCheckpointSid = infimumId clusterState
       }
 
 
