@@ -610,7 +610,7 @@ handleRuntimeMessage (HandleCallResponse source mid msg) = do
               ]
             peers = Map.keysSet responses2
           in
-            if Set.null (Map.keysSet response \\ peers)
+            if Set.null (peers \\ Map.keysSet response)
               then do
                 respond responder (Just <$> response)
                 put state {
