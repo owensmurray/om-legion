@@ -610,7 +610,7 @@ handleRuntimeMessage (HandleCallResponse source mid msg) = do
               ]
             peers = Map.keysSet responses2
           in
-            if Set.null (Map.keysSet response \\ peers)
+            if Set.null (peers \\ Map.keysSet response)
               then do
                 respond responder (Just <$> response)
                 put state {
@@ -619,7 +619,10 @@ handleRuntimeMessage (HandleCallResponse source mid msg) = do
               else
                 put state {
                     rsBroadcalls =
-                      Map.insert mid (responses2, responder, expiry) rsBroadcalls
+                      Map.insert
+                        mid
+                        (responses2, responder, expiry)
+                        rsBroadcalls
                   }
     Just responder -> do
       respond responder msg
