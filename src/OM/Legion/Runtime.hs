@@ -619,7 +619,10 @@ handleRuntimeMessage (HandleCallResponse source mid msg) = do
               else
                 put state {
                     rsBroadcalls =
-                      Map.insert mid (responses2, responder, expiry) rsBroadcalls
+                      Map.insert
+                        mid
+                        (responses2, responder, expiry)
+                        rsBroadcalls
                   }
     Just responder -> do
       respond responder msg
