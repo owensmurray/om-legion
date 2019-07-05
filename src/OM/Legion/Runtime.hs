@@ -83,7 +83,7 @@ import OM.Socket (connectServer, AddressDescription(AddressDescription),
   openEgress, Endpoint(Endpoint), openIngress, openServer)
 import System.Clock (TimeSpec)
 import System.Random.Shuffle (shuffleM)
-import Web.HttpApiData (FromHttpApiData, parseUrlPiece)
+import Web.HttpApiData (FromHttpApiData, ToHttpApiData)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import qualified OM.Fork as Fork
@@ -345,10 +345,9 @@ newtype Peer = Peer {
     unPeer :: NodeName
   }
   deriving newtype (
-    Eq, Ord, Show, ToJSONKey, ToJSON, Binary, IsString, FromJSONKey
+    Eq, Ord, Show, ToJSONKey, ToJSON, Binary, IsString, FromJSONKey,
+    ToHttpApiData, FromHttpApiData
   )
-instance FromHttpApiData Peer where
-  parseUrlPiece = fmap (Peer . NodeName) . parseUrlPiece
 
 
 {- |
