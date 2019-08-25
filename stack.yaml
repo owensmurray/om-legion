@@ -9,9 +9,9 @@ extra-deps:
 - om-account-types-5.8.0.0
 - om-base58-0.1.0.1
 - om-compute-types-0.3.3.1
-- om-deploy-types-1.4.3.1
+- om-deploy-types-1.6.0.0
 - om-discovery-client-0.1.1.2
-- om-fork-0.5.0.1
+- om-fork-0.5.1.0
 - om-gce-metadata-0.1.5.0
 - om-hash-0.3.1.0
 - om-json-0.2.5.0

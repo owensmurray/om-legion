@@ -39,7 +39,7 @@ library
     mmorph             >= 1.1.0    && < 1.2,
     monad-logger       >= 0.3.25.1 && < 0.4,
     network            >= 2.8.0.0  && < 2.9,
-    om-deploy-types    >= 1.4.0.0  && < 1.5,
+    om-deploy-types    >= 1.6.0.0  && < 1.7,
     om-fork            >= 0.5.0.1  && < 0.6,
     om-logging         >= 0.4.0.0  && < 0.5,
     om-powerstate      >= 4.0.0.0  && < 4.1,
