@@ -703,7 +703,7 @@ propagate = do
       ) <$> get
     let
       targets = Set.delete self $
-        PS.divergent cluster
+        PS.allParticipants cluster
 
     now <- liftIO getCurrentTime
     liftIO (shuffleM (Set.toList targets)) >>= \case
@@ -721,7 +721,7 @@ propagate = do
               <> "made on the cluster state."
             sendPeer (PMFullMerge cluster) target
             modify (\rs -> rs {rsCheckpointTime = now})
-          else sendPeer (PMMerge (events cluster)) target
+          else sendPeer (PMMerge (events target cluster)) target
     modify (\rs -> rs {
         rsCheckpointSid = infimumId cluster,
         rsCheckpointTime =
