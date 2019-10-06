@@ -9,7 +9,7 @@ extra-deps:
 - om-account-types-5.8.0.0
 - om-base58-0.1.0.1
 - om-compute-types-0.3.3.1
-- om-deploy-types-1.6.0.0
+- om-deploy-types-1.6.1.0
 - om-discovery-client-0.1.1.2
 - om-fork-0.5.1.0
 - om-gce-metadata-0.1.5.0
@@ -17,9 +17,9 @@ extra-deps:
 - om-json-0.2.5.0
 - om-lift-0.1.0.2
 - om-logging-0.4.0.0
-- om-powerstate-4.0.0.2
+- om-powerstate-4.1.0.0
 - om-show-0.1.1.0
 - om-socket-0.7.0.1
 - om-stripe-0.3.1.0
 - om-time-0.1.2.2
-resolver: lts-13.25
+resolver: lts-13.30
