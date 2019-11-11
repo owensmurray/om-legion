@@ -17,7 +17,7 @@ extra-deps:
 - om-json-0.2.5.0
 - om-lift-0.1.0.2
 - om-logging-0.4.0.0
-- om-powerstate-4.1.0.0
+- om-powerstate-4.2.0.0
 - om-show-0.1.1.0
 - om-socket-0.7.0.1
 - om-stripe-0.3.1.0
