@@ -5,6 +5,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TemplateHaskell #-}
@@ -1009,7 +1010,7 @@ addTime diff time =
     secDiff = truncate rat
 
     nsecDiff :: Int64
-    nsecDiff = truncate ((toRational diff - toRational secDiff) * 1000000000)
+    nsecDiff = truncate ((toRational diff - toRational secDiff) * 1_000_000_000)
   in
     Clock.TimeSpec {
       Clock.sec = Clock.sec time + secDiff,
