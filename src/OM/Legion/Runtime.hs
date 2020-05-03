@@ -36,7 +36,6 @@ module OM.Legion.Runtime (
   -- * Other Exports.
   Peer(..),
   getClusterName,
-  joinMessagePort,
 ) where
 
 
@@ -865,7 +864,7 @@ respondToWaiting available = do
 data StartupMode e
   = NewCluster ClusterName
     {- ^ Indicates that we should bootstrap a new cluster at startup. -}
-  | JoinCluster AddressDescription
+  | JoinCluster Peer
     {- ^ Indicates that the node should try to join an existing cluster. -}
   | Recover (PowerState ClusterName Peer e)
 deriving instance
@@ -896,7 +895,7 @@ makeRuntimeState
 makeRuntimeState
     self
     notify
-    (JoinCluster addr)
+    (JoinCluster (joinAddr -> addr))
   = do
     {- Join a cluster an existing cluster. -}
     $(logInfo) $ "Trying to join an existing cluster on " <> showt addr
@@ -1021,5 +1020,14 @@ addTime diff time =
 {- | Specialized 'Clock.getTime'. -}
 getTime :: (MonadIO m) => m TimeSpec
 getTime = liftIO $ Clock.getTime Clock.Monotonic
+
+
+{- | Construct a join address. -}
+joinAddr :: Peer -> AddressDescription
+joinAddr =
+  AddressDescription
+  . (<> (":" <> showt joinMessagePort))
+  . unNodeName
+  . unPeer
 
 
