@@ -5,6 +5,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TemplateHaskell #-}
@@ -35,52 +36,51 @@ module OM.Legion.Runtime (
   -- * Other Exports.
   Peer(..),
   getClusterName,
-  joinMessagePort,
 ) where
 
 
 import Control.Arrow ((&&&))
-import Control.Concurrent (Chan, writeChan, newChan, threadDelay,
-  readChan)
+import Control.Concurrent (Chan, newChan, readChan, threadDelay,
+  writeChan)
 import Control.Concurrent.Async (Async, async, race_)
-import Control.Concurrent.STM (TVar, atomically, newTVar, writeTVar,
-  readTVar, retry)
-import Control.Exception.Safe (MonadCatch, tryAny, finally)
-import Control.Monad (void, join, when)
+import Control.Concurrent.STM (TVar, atomically, newTVar, readTVar,
+  retry, writeTVar)
+import Control.Exception.Safe (MonadCatch, finally, tryAny)
+import Control.Monad (join, void, when)
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Control.Monad.Logger (MonadLoggerIO, logDebug, logInfo, logWarn,
-  logError, askLoggerIO, runLoggingT, LoggingT, LogStr)
+import Control.Monad.Logger (LogStr, LoggingT, MonadLoggerIO, askLoggerIO,
+  logDebug, logError, logInfo, logWarn, runLoggingT)
 import Control.Monad.Morph (hoist)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (runExceptT)
-import Control.Monad.Trans.State (evalStateT, StateT, get, put, modify)
-import Data.Aeson (ToJSON, ToJSONKey, FromJSONKey)
+import Control.Monad.Trans.State (StateT, evalStateT, get, modify, put)
+import Data.Aeson (FromJSONKey, ToJSON, ToJSONKey)
 import Data.Binary (Binary, Word64)
 import Data.ByteString.Lazy (ByteString)
-import Data.Conduit (runConduit, (.|), awaitForever, Source, yield)
+import Data.Conduit ((.|), Source, awaitForever, runConduit, yield)
 import Data.Default.Class (Default)
 import Data.Int (Int64)
 import Data.Map (Map)
 import Data.Monoid ((<>))
-import Data.Set (Set, (\\))
+import Data.Set ((\\), Set)
 import Data.String (IsString)
-import Data.Time (UTCTime, getCurrentTime, diffUTCTime, DiffTime)
+import Data.Time (DiffTime, UTCTime, diffUTCTime, getCurrentTime)
 import Data.UUID (UUID)
 import Data.Void (Void)
 import GHC.Generics (Generic)
 import Network.Socket (PortNumber)
-import OM.Deploy.Types (NodeName(NodeName), unNodeName, ClusterName)
-import OM.Fork (Actor, actorChan, Msg, Responder, Background)
+import OM.Deploy.Types (NodeName(NodeName), ClusterName, unNodeName)
+import OM.Fork (Actor, Background, Msg, Responder, actorChan)
 import OM.Legion.Conduit (chanToSink)
 import OM.Legion.UUID (getUUID)
 import OM.Logging (withPrefix)
-import OM.PowerState (PowerState, Event, StateId, projParticipants,
-  EventPack, events, Output, State, infimumId)
-import OM.PowerState.Monad (event, acknowledge, runPowerStateT, merge,
-  PowerStateT, disassociate, participate, acknowledgeAs, fullMerge)
+import OM.PowerState (Event, EventPack, Output, PowerState, State,
+  StateId, events, infimumId, projParticipants)
+import OM.PowerState.Monad (PowerStateT, acknowledge, acknowledgeAs,
+  disassociate, event, fullMerge, merge, participate, runPowerStateT)
 import OM.Show (showt)
-import OM.Socket (connectServer, AddressDescription(AddressDescription),
-  openEgress, Endpoint(Endpoint), openIngress, openServer)
+import OM.Socket (AddressDescription(AddressDescription),
+  Endpoint(Endpoint), connectServer, openEgress, openIngress, openServer)
 import System.Clock (TimeSpec)
 import System.Random.Shuffle (shuffleM)
 import Web.HttpApiData (FromHttpApiData, ToHttpApiData)
@@ -864,7 +864,7 @@ respondToWaiting available = do
 data StartupMode e
   = NewCluster ClusterName
     {- ^ Indicates that we should bootstrap a new cluster at startup. -}
-  | JoinCluster AddressDescription
+  | JoinCluster Peer
     {- ^ Indicates that the node should try to join an existing cluster. -}
   | Recover (PowerState ClusterName Peer e)
 deriving instance
@@ -895,7 +895,7 @@ makeRuntimeState
 makeRuntimeState
     self
     notify
-    (JoinCluster addr)
+    (JoinCluster (joinAddr -> addr))
   = do
     {- Join a cluster an existing cluster. -}
     $(logInfo) $ "Trying to join an existing cluster on " <> showt addr
@@ -1009,7 +1009,7 @@ addTime diff time =
     secDiff = truncate rat
 
     nsecDiff :: Int64
-    nsecDiff = truncate ((toRational diff - toRational secDiff) * 1000000000)
+    nsecDiff = truncate ((toRational diff - toRational secDiff) * 1_000_000_000)
   in
     Clock.TimeSpec {
       Clock.sec = Clock.sec time + secDiff,
@@ -1020,5 +1020,14 @@ addTime diff time =
 {- | Specialized 'Clock.getTime'. -}
 getTime :: (MonadIO m) => m TimeSpec
 getTime = liftIO $ Clock.getTime Clock.Monotonic
+
+
+{- | Construct a join address. -}
+joinAddr :: Peer -> AddressDescription
+joinAddr =
+  AddressDescription
+  . (<> (":" <> showt joinMessagePort))
+  . unNodeName
+  . unPeer
 
 
