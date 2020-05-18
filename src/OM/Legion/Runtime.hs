@@ -53,10 +53,10 @@ import Control.Monad (join, mzero, void, when)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Logger (LogStr, LoggingT, MonadLoggerIO, askLoggerIO,
   logDebug, logError, logInfo, logWarn, runLoggingT)
-import Control.Monad.Morph (hoist)
+import Control.Monad.State (MonadState, StateT, evalStateT, get, gets,
+  modify, put, runStateT)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (runExceptT)
-import Control.Monad.Trans.State (StateT, evalStateT, get, modify, put)
 import Data.Aeson (FromJSON, ToJSON, ToJSONKey)
 import Data.Binary (Binary, Word64)
 import Data.ByteString.Lazy (ByteString)
@@ -551,7 +551,7 @@ handleOutstandingJoins = do
 {- | Handle any broadcall timeouts. -}
 handleBroadcallTimeouts :: (MonadIO m) => StateT (RuntimeState e) m ()
 handleBroadcallTimeouts = do
-  broadcalls <- rsBroadcalls <$> get
+  broadcalls <- gets rsBroadcalls
   now <- getTime
   sequence_ [
       do
@@ -619,7 +619,7 @@ handleRuntimeMessage (ReadState responder) =
 
 handleRuntimeMessage (Call target msg responder) = do
     mid <- newMessageId
-    source <- rsSelf <$> get
+    source <- gets rsSelf
     setCallResponder mid
     sendPeer (PMCall source mid msg) target
   where
@@ -638,7 +638,7 @@ handleRuntimeMessage (Cast target msg) =
 handleRuntimeMessage (Broadcall timeout msg responder) = do
     expiry <- addTime timeout <$> getTime
     mid <- newMessageId
-    source <- rsSelf <$> get
+    source <- gets rsSelf
     setBroadcallResponder expiry mid
     mapM_ (sendPeer (PMCall source mid msg)) =<< getPeers
   where
@@ -665,7 +665,7 @@ handleRuntimeMessage (Broadcast msg) =
   mapM_ (sendPeer (PMCast msg)) =<< getPeers
 
 handleRuntimeMessage (SendCallResponse target mid msg) = do
-  source <- rsSelf <$> get
+  source <- gets rsSelf
   sendPeer (PMCallResponse source mid msg) target
 
 handleRuntimeMessage (HandleCallResponse source mid msg) = do
@@ -707,7 +707,7 @@ handleRuntimeMessage (Resend responder) =
 
 {- | Get the projected peers. -}
 getPeers :: (Monad m) => StateT (RuntimeState e) m (Set Peer)
-getPeers = projParticipants . rsClusterState <$> get
+getPeers = gets (projParticipants . rsClusterState)
 
 
 {- | Get a new messageId. -}
@@ -770,16 +770,22 @@ waitOn sid responder =
 
 
 {- | Propagates cluster information if necessary. -}
-propagate :: (Constraints e, MonadCatch m, MonadLoggerIO m)
-  => StateT (RuntimeState e) m ()
+propagate
+  :: ( Constraints e
+     , MonadCatch m
+     , MonadLoggerIO m
+     , MonadState (RuntimeState e) m
+     )
+  => m ()
 propagate = do
     (self, (cluster, (checkSid, checkTime))) <-
-      (
-        rsSelf
-        &&& rsClusterState
-        &&& rsCheckpointSid
-        &&& rsCheckpointTime
-      ) <$> get
+      gets
+        (
+          rsSelf
+          &&& rsClusterState
+          &&& rsCheckpointSid
+          &&& rsCheckpointTime
+        )
     let
       targets = Set.delete self $
         PS.allParticipants cluster
@@ -818,18 +824,27 @@ propagate = do
       Shut down connections to peers that are no longer participating
       in the cluster.
     -}
-    disconnectObsolete :: (MonadIO m) => StateT (RuntimeState e) m ()
+    disconnectObsolete
+      :: ( MonadIO m
+         , MonadState (RuntimeState e) m
+         )
+      => m ()
     disconnectObsolete = do
-        RuntimeState {rsClusterState, rsConnections} <- get
-        mapM_ disconnect $
-          PS.allParticipants rsClusterState \\ Map.keysSet rsConnections
+      (cluster, conns) <- gets (rsClusterState &&& rsConnections)
+      mapM_ disconnect $
+        PS.allParticipants cluster \\ Map.keysSet conns
 
 
 {- | Send a peer message, creating a new connection if need be. -}
-sendPeer :: (Constraints e, MonadCatch m, MonadLoggerIO m)
+sendPeer
+  :: ( Constraints e
+     , MonadCatch m
+     , MonadLoggerIO m
+     , MonadState (RuntimeState e) m
+     )
   => PeerMessage e
   -> Peer
-  -> StateT (RuntimeState e) m ()
+  -> m ()
 sendPeer msg peer = do
   state@RuntimeState {rsConnections} <- get
   case Map.lookup peer rsConnections of
@@ -837,18 +852,25 @@ sendPeer msg peer = do
       conn <- createConnection peer
       put state {rsConnections = Map.insert peer conn rsConnections}
       sendPeer msg peer
-    Just conn ->
-      (hoist liftIO . tryAny) (conn msg) >>= \case
+    Just conn -> do
+      rs <- get
+      (liftIO . tryAny) (runStateT (conn msg) rs) >>= \case
         Left err -> do
           $(logWarn) $ "Failure sending to peer: " <> showt (peer, err)
           disconnect peer
-        Right () -> do
+        Right ((), rs2) -> do
+          put rs2
           $(logDebug) $ "Sent message to peer: " <> showt (peer, msg)
           return ()
 
 
 {- | Disconnect the connection to a peer. -}
-disconnect :: (MonadIO m) => Peer -> StateT (RuntimeState e) m ()
+disconnect
+  :: ( MonadIO m
+     , MonadState (RuntimeState e) m
+     )
+  => Peer
+  -> m ()
 disconnect peer =
   modify (\state@RuntimeState {rsConnections} -> state {
     rsConnections = Map.delete peer rsConnections
@@ -856,9 +878,16 @@ disconnect peer =
 
 
 {- | Create a connection to a peer. -}
-createConnection :: (Constraints e, MonadCatch m, MonadLoggerIO m)
+createConnection
+  :: ( Constraints e
+     , MonadCatch m
+     , MonadIO w
+     , MonadLoggerIO m
+     , MonadState (RuntimeState e) m
+     , MonadState (RuntimeState e) w
+     )
   => Peer
-  -> StateT (RuntimeState e) m (PeerMessage e -> StateT (RuntimeState e) IO ())
+  -> m (PeerMessage e -> w ())
 createConnection peer = do
     rts@RuntimeState {rsSelf} <- get
     latest <- liftIO $ atomically (newTVar (Just []))
