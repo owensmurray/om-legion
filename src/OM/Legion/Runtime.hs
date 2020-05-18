@@ -104,22 +104,22 @@ data RuntimeState e = RuntimeState {
               rsSelf :: Peer,
       rsClusterState :: PowerState ClusterName Peer e,
        rsConnections :: Map
-                        Peer
-                        (PeerMessage e -> StateT (RuntimeState e) IO ()),
+                          Peer
+                          (PeerMessage e -> StateT (RuntimeState e) IO ()),
            rsWaiting :: Map (StateId Peer) (Responder (Output e)),
              rsCalls :: Map MessageId (Responder ByteString),
         rsBroadcalls :: Map
-                        MessageId
-                        (
-                          Map Peer (Maybe ByteString),
-                          Responder (Map Peer (Maybe ByteString)),
-                          TimeSpec
-                        ),
+                          MessageId
+                          (
+                            Map Peer (Maybe ByteString),
+                            Responder (Map Peer (Maybe ByteString)),
+                            TimeSpec
+                          ),
             rsNextId :: MessageId,
             rsNotify :: PowerState ClusterName Peer e -> IO (),
              rsJoins :: Map
-                        (StateId Peer)
-                        (Responder (JoinResponse e)),
+                          (StateId Peer)
+                          (Responder (JoinResponse e)),
                         {- ^
                           The infimum of the powerstate we send to
                           a new participant must have moved past the
@@ -134,7 +134,6 @@ data RuntimeState e = RuntimeState {
                         -}
      rsCheckpointSid :: StateId Peer,
     rsCheckpointTime :: UTCTime
-
   }
 
 
@@ -742,7 +741,12 @@ updateClusterAs :: (
       Constraints e, MonadCatch m, MonadLoggerIO m
     )
   => Peer
-  -> PowerStateT ClusterName Peer e (StateT (RuntimeState e) m) a
+  -> PowerStateT
+       ClusterName
+       Peer
+       e
+       (StateT (RuntimeState e) m)
+       a
   -> StateT (RuntimeState e) m a
 updateClusterAs asPeer action = do
   RuntimeState {rsClusterState} <- get
@@ -942,10 +946,8 @@ respondToWaiting available = do
 data StartupMode e
   {- | Indicates that we should bootstrap a new cluster at startup. -}
   = NewCluster
-      Peer
-      {- ^ The peer being launched. -}
-      ClusterName
-      {- ^ The name of the cluster being launched. -}
+      Peer {- ^ The peer being launched. -}
+      ClusterName {- ^ The name of the cluster being launched. -}
 
   {- | Indicates that the node should try to join an existing cluster. -}
   | JoinCluster
@@ -976,9 +978,13 @@ makeRuntimeState
     (NewCluster self clusterId)
   =
     {- Build a brand new node state, for the first node in a cluster. -}
-    makeRuntimeState
-      notify
-      (Recover self (PS.new clusterId (Set.singleton self)))
+    let
+      cluster =
+        PS.new clusterId (Set.singleton self)
+    in
+      makeRuntimeState
+        notify
+        (Recover self cluster)
 
 makeRuntimeState
     notify
@@ -999,7 +1005,8 @@ makeRuntimeState
     requestJoin joinMsg = ($ joinMsg) =<< connectServer addr
 
     addr :: AddressDescription
-    addr = legionPeer clusterName targetPeer
+    addr =
+      legionPeer clusterName targetPeer
 
 makeRuntimeState
     notify
