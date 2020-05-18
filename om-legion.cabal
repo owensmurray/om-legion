@@ -5,12 +5,12 @@ name:                om-legion
 version:             6.0.0.0
 synopsis:            Core Legion Framework.
 -- description:         
-homepage:            https://github.com/owensmurray/om-legion2
+homepage:            https://github.com/owensmurray/om-legion
 license:             AllRightsReserved
 license-file:        LICENSE
 author:              Rick Owens
 maintainer:          rick@owensmurray.com
-copyright:           2017 Owens Murray, LLC.
+copyright:           2020 Owens Murray, LLC.
 category:            Network
 build-type:          Simple
 extra-source-files:
@@ -43,7 +43,7 @@ library
     network            >= 2.8.0.0  && < 2.9,
     om-fork            >= 0.5.0.1  && < 0.6,
     om-logging         >= 0.4.0.0  && < 0.5,
-    om-powerstate      >= 4.2.0.0  && < 4.3,
+    om-powerstate      >= 4.2.1.0  && < 4.3,
     om-show            >= 0.1.0.2  && < 0.2,
     om-socket          >= 0.7.0.0  && < 0.8,
     random-shuffle     >= 0.0.4    && < 0.1,
