@@ -2,7 +2,7 @@
 -- documentation, see http://haskell.org/cabal/users-guide/
 
 name:                om-legion
-version:             5.3.0.0
+version:             6.0.0.0
 synopsis:            Core Legion Framework.
 -- description:         
 homepage:            https://github.com/owensmurray/om-legion2
@@ -22,6 +22,7 @@ library
     OM.Legion
   other-modules:       
     OM.Legion.Conduit
+    OM.Legion.Management
     OM.Legion.Runtime
     OM.Legion.UUID
   -- other-extensions:    
@@ -36,10 +37,10 @@ library
     containers         >= 0.6.0.1  && < 0.7,
     data-default-class >= 0.1.2.0  && < 0.2,
     http-api-data      >= 0.4      && < 0.5,
-    mmorph             >= 1.1.0    && < 1.2,
+    megaparsec         >= 7.0.5    && < 7.1,
     monad-logger       >= 0.3.25.1 && < 0.4,
+    mtl                >= 2.2.2    && < 2.3,
     network            >= 2.8.0.0  && < 2.9,
-    om-deploy-types    >= 1.6.0.0  && < 1.7,
     om-fork            >= 0.5.0.1  && < 0.6,
     om-logging         >= 0.4.0.0  && < 0.5,
     om-powerstate      >= 4.2.0.0  && < 4.3,

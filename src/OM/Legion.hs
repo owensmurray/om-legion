@@ -4,6 +4,7 @@ module OM.Legion (
   -- * Starting up the runtime.
   forkLegionary,
   StartupMode(..),
+  Runtime,
 
   -- * Applying state changes.
   applyFast,
@@ -21,15 +22,20 @@ module OM.Legion (
   getSelf,
   getClusterName,
 
-  -- * Other types.
-  Runtime,
-  Peer(..),
+  -- * Cluster Topology
+  Peer,
+  ClusterName,
+  ClusterGoal,
+  ClusterEvent,
+  parseLegionPeer,
+  legionPeer,
 ) where
 
 
-import OM.Legion.Runtime (forkLegionary, StartupMode(NewCluster,
-  JoinCluster, Recover), Runtime, applyFast, applyConsistent, readState,
-  Peer(Peer, unPeer), call, cast, broadcall, broadcast, getSelf, eject,
-  getClusterName)
+import OM.Legion.Management (ClusterEvent, ClusterGoal, Peer)
+import OM.Legion.Runtime (StartupMode(JoinCluster, NewCluster, Recover),
+  ClusterName, Runtime, applyConsistent, applyFast, broadcall, broadcast,
+  call, cast, eject, forkLegionary, getClusterName, getSelf, legionPeer,
+  parseLegionPeer, readState)
 
 
