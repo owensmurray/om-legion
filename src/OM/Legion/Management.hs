@@ -1,7 +1,12 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 {- |
   Description: This module contains the algorith for cluster
@@ -10,22 +15,28 @@
 module OM.Legion.Management (
   Peer(..),
   Cluster(..),
+  TopologyEvent(..),
   ClusterEvent(..),
   ClusterGoal(..),
   RebalanceOrdinal,
   Action(..),
+  TopologySensitive(..),
+  userEvent,
+  topEvent,
 ) where
 
 
 import Data.Aeson (FromJSON, ToJSON, ToJSONKey)
 import Data.Binary (Binary)
 import Data.Default.Class (Default, def)
+import Data.Proxy (Proxy(Proxy))
 import Data.Semigroup ((<>))
 import Data.Set ((\\), Set, member)
 import Data.Word (Word64)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
-import OM.PowerState (EventResult(Pure), Event, Output, State, apply)
+import OM.PowerState (EventResult(Pure, SystemError), Event, Output,
+  State, apply)
 import qualified Data.Set as Set
 
 
@@ -50,17 +61,17 @@ newtype ClusterGoal = ClusterGoal {
   deriving newtype (Eq, Num, Show, ToJSON, Binary)
 
 
-{- | Events that can change the cluster state. -}
-data ClusterEvent
+{- | Events that can change the cluster topology. -}
+data TopologyEvent
   = CommissionComplete Peer
   | UpdateClusterGoal ClusterGoal
   | Terminated Peer
   deriving (Eq, Show, Generic)
-instance Binary ClusterEvent
-instance ToJSON ClusterEvent
-instance Event ClusterEvent where
-  type State ClusterEvent = Cluster
-  type Output ClusterEvent = ()
+instance Binary TopologyEvent
+instance ToJSON TopologyEvent
+instance Event TopologyEvent where
+  type State TopologyEvent = Cluster
+  type Output TopologyEvent = ()
   apply e cluster =
     let
       (o, c) = case e of
@@ -90,6 +101,54 @@ instance Event ClusterEvent where
             [] -> c { cPlan = plan (cGoal c) (cOnline c) }
             _ -> c
         )
+
+
+{- | Smart constructor for a user event. -}
+userEvent :: e -> ClusterEvent e
+userEvent = ClusterEvent . Right
+
+{- | Smart constructor for a topolobyt event. -}
+topEvent :: TopologyEvent -> ClusterEvent e
+topEvent = ClusterEvent . Left
+
+
+newtype ClusterEvent e = ClusterEvent {
+    _unClusterEvent :: Either TopologyEvent e
+  }
+  deriving stock (Show)
+  deriving newtype (ToJSON, Binary, Eq)
+instance (TopologySensitive e, Event e) => Event (ClusterEvent e) where
+  type State (ClusterEvent e) = (State TopologyEvent, State e)
+  type Output (ClusterEvent e) = Either (Output TopologyEvent) (Output e)
+  apply (ClusterEvent (Left e)) (a, b) =
+    case (apply e a, applyTopology (Proxy @e) e b) of
+      (Pure o a2, b2) -> Pure (Left o) (a2, b2)
+      (SystemError o, _) -> SystemError (Left o)
+  apply (ClusterEvent (Right e)) (a, b) =
+    case apply e b of
+      Pure o b2 -> Pure (Right o) (a, b2)
+      SystemError o -> SystemError (Right o)
+
+{- |
+  om-legion allows your global cluster state to be sensitive to changes
+  in the cluster topology. This type class allows that to happen.
+-}
+class TopologySensitive e where
+  {- | Apply the topology change to your application state. -}
+  applyTopology :: proxy e -> TopologyEvent -> State e -> State e
+
+  {- |
+    If your application is sensitive to the legion cluster topology,
+    it may be the case that you need to take action prior to a peer
+    being decommissioned.  For instance other peers may need to take
+    over resources managed by the outgoing peer. This method asks
+    your application state whether it still needs time before actually
+    turning off the indicated peer. It is expected that your application
+    will automatically recognize that it needs to take some action by
+    inspecting its own state, and the state will eventually change to
+    a value that returns 'True' for the indicated peer.
+  -}
+  allowDecommission :: proxy e -> Peer -> State e -> Bool
 
 
 {- | The identification of a node within the legion cluster. -}

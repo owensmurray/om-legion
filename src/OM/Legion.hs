@@ -25,14 +25,25 @@ module OM.Legion (
   -- * Cluster Topology
   Peer,
   ClusterName,
-  ClusterGoal,
-  ClusterEvent,
+  ClusterGoal(..),
   parseLegionPeer,
   legionPeer,
+
+  -- ** Topology Events.
+  {- |
+    These types allow your custom cluster state to get changed in response
+    to om-legion cluster topology events.
+  -}
+  TopologySensitive(..),
+  TopologyEvent(..),
+  ClusterEvent,
+
 ) where
 
 
-import OM.Legion.Management (ClusterEvent, ClusterGoal, Peer)
+import OM.Legion.Management (ClusterGoal(ClusterGoal, cgNumNodes),
+  TopologyEvent(CommissionComplete, Terminated, UpdateClusterGoal),
+  TopologySensitive(allowDecommission, applyTopology), ClusterEvent, Peer)
 import OM.Legion.Runtime (StartupMode(JoinCluster, NewCluster, Recover),
   ClusterName, Runtime, applyConsistent, applyFast, broadcall, broadcast,
   call, cast, eject, forkLegionary, getClusterName, getSelf, legionPeer,
