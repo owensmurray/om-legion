@@ -16,7 +16,6 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns #-}
-{-# OPTIONS_GHC -Wno-deprecations #-}
 
 {- | The meat of the Legion runtime implementation. -}
 module OM.Legion.Runtime (
@@ -63,7 +62,7 @@ import Control.Monad.Trans.Except (runExceptT)
 import Data.Aeson (FromJSON, ToJSON)
 import Data.Binary (Binary, Word64)
 import Data.ByteString.Lazy (ByteString)
-import Data.Conduit ((.|), Source, awaitForever, runConduit, yield)
+import Data.Conduit ((.|), ConduitT, awaitForever, runConduit, yield)
 import Data.Default.Class (Default)
 import Data.Int (Int64)
 import Data.Map (Map)
@@ -1015,7 +1014,7 @@ createConnection peer = do
     latestSource :: (MonadIO m)
       => Peer
       -> TVar (Maybe [PeerMessage e])
-      -> Source m (Peer, PeerMessage e)
+      -> ConduitT void (Peer, PeerMessage e) m ()
     latestSource self_ latest =
       (liftIO . atomically) (
         readTVar latest >>= \case
