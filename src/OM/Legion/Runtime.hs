@@ -1212,7 +1212,7 @@ newSequence = do
   `Enum` really isn't appropriate.
 -}
 nextMessageId :: MessageId -> MessageId
-nextMessageId (M sequenceId ord) = M sequenceId (ord + 1)
+nextMessageId (M sequenceId ord) = M sequenceId (succ ord)
 
 
 type Constraints e = (
