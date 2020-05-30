@@ -1006,6 +1006,18 @@ createConnection peer = do
                   Just $ case msg of
                     PMMerge _ ->
                       msg : filter (\case {PMMerge _ -> False; _ -> True}) msgs
+                    PMFullMerge _ ->
+                      {-
+                        Full merges override both older full merges and
+                        older partial merges.
+                      -}
+                      msg : filter
+                              (\case
+                                PMMerge _ -> False
+                                PMFullMerge _ -> False
+                                _ -> True
+                              )
+                              msgs
                     _ -> msgs ++ [msg] 
                 )
               return (return ())
