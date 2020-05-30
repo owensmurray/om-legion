@@ -619,7 +619,9 @@ handleRuntimeMessage (ApplyConsistent e responder) = do
   $(logDebug) $ "Waiting: " <> showt (rsWaiting rs)
 
 handleRuntimeMessage (Eject peer) =
-  updateClusterAs peer $ disassociate peer
+  updateClusterAs peer $ do
+    void $ event (topEvent (Terminated peer))
+    disassociate peer
 
 handleRuntimeMessage (Merge other) =
   updateCluster $

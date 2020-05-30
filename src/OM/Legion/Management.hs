@@ -73,34 +73,38 @@ instance Event TopologyEvent where
   type State TopologyEvent = Cluster
   type Output TopologyEvent = ()
   apply e cluster =
-    let
-      (o, c) = case e of
-        CommissionComplete peer ->
+      let
+        (o, c) = case e of
+          CommissionComplete peer ->
+            (
+              (),
+              case currentPlan cluster of
+                Just (_ord, action@(Commission p))
+                  | peer == p -> actionResult action cluster
+                _ -> cluster
+            )
+          UpdateClusterGoal goal ->
+            ((), cluster {cGoal = goal})
+          Terminated peer ->
+            (
+              (),
+              removePeer peer $
+                case currentPlan cluster of
+                  Just (_, action@(Decommission p))
+                    | p == peer -> actionResult action cluster
+                  _ -> cluster
+            )
+      in
+        Pure
+          o
           (
-            (),
-            case currentPlan cluster of
-              Just (_ord, action@(Commission p))
-                | peer == p -> actionResult action cluster
-              _ -> cluster
+            case cPlan c of
+              [] -> c { cPlan = plan (cGoal c) (cOnline c) }
+              _ -> c
           )
-        UpdateClusterGoal goal ->
-          ((), cluster {cGoal = goal})
-        Terminated peer ->
-          (
-            (),
-            case currentPlan cluster of
-              Just (_, action@(Decommission p))
-                | p == peer -> actionResult action cluster
-              _ -> cluster
-          )
-    in
-      Pure
-        o
-        (
-          case cPlan c of
-            [] -> c { cPlan = plan (cGoal c) (cOnline c) }
-            _ -> c
-        )
+    where
+      removePeer :: Peer -> Cluster -> Cluster
+      removePeer peer c = c {cOnline = Set.delete peer (cOnline c)}
 
 
 {- | Smart constructor for a user event. -}
