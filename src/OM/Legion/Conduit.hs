@@ -1,4 +1,3 @@
-{-# OPTIONS_GHC -Wno-deprecations #-}
 {- | This module contains some handy conduit abstractions. -}
 module OM.Legion.Conduit (
   chanToSource,
@@ -6,15 +5,13 @@ module OM.Legion.Conduit (
 ) where
 
 
-import Control.Concurrent.Chan (Chan, writeChan, readChan)
+import Control.Concurrent.Chan (Chan, readChan, writeChan)
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Data.Conduit (Source, Sink, yield, awaitForever)
+import Data.Conduit (ConduitT, awaitForever, yield)
 
 
-{- |
-  Convert a channel into a Source.
--}
-chanToSource :: (MonadIO io) => Chan a -> Source io a
+{- | Convert a channel into a source conduit. -}
+chanToSource :: (MonadIO m) => Chan a -> ConduitT void a m ()
 chanToSource chan = do
   {-
     Don't use 'Control.Monad.forever' here. For some reason that is unclear to
@@ -36,10 +33,8 @@ chanToSource chan = do
   chanToSource chan
 
 
-{- |
- Convert a channel into a Sink.
--}
-chanToSink :: (MonadIO io) => Chan a -> Sink a io ()
+{- | Convert a channel into a sink conduit. -}
+chanToSink :: (MonadIO m) => Chan a -> ConduitT a void m ()
 chanToSink chan = awaitForever (liftIO . writeChan chan)
 
 
