@@ -24,7 +24,6 @@ library
     OM.Legion.Conduit
     OM.Legion.Management
     OM.Legion.Runtime
-    OM.Legion.UUID
   -- other-extensions:    
   build-depends:
     aeson              >= 1.4.2.0  && < 1.5,

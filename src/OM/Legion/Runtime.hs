@@ -74,6 +74,7 @@ import Data.String (IsString, fromString)
 import Data.Text (Text)
 import Data.Time (DiffTime, UTCTime, diffUTCTime, getCurrentTime)
 import Data.UUID (UUID)
+import Data.UUID.V1 (nextUUID)
 import Data.Void (Void)
 import GHC.Generics (Generic)
 import Network.Socket (PortNumber)
@@ -84,7 +85,6 @@ import OM.Legion.Management (Action(Commission, Decommission), Peer(Peer),
   TopologyEvent(CommissionComplete, Terminated, UpdateClusterGoal),
   ClusterEvent, ClusterGoal, RebalanceOrdinal, TopologySensitive,
   allowDecommission, cOrd, cPlan, topEvent, userEvent)
-import OM.Legion.UUID (getUUID)
 import OM.Logging (withPrefix)
 import OM.PowerState (Event, EventPack, Output, PowerState, State,
   StateId, events, infimumId, infimumValue, origin, projParticipants)
@@ -1197,8 +1197,15 @@ instance Binary MessageId
 -}
 newSequence :: (MonadIO m) => m MessageId
 newSequence = do
-  sid <- getUUID
-  return (M sid 0)
+    sid <- getUUID
+    pure (M sid 0)
+  where
+    {- | A utility function that makes a UUID, no matter what.  -}
+    getUUID :: (MonadIO m) => m UUID
+    getUUID = liftIO nextUUID >>= maybe (wait >> getUUID) return
+      where
+        wait = liftIO (threadDelay oneMillisecond)
+        oneMillisecond = 1000
 
 
 {- |
