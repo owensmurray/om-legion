@@ -2,7 +2,7 @@
 -- documentation, see http://haskell.org/cabal/users-guide/
 
 name:                om-legion
-version:             6.1.0.1
+version:             6.1.0.2
 synopsis:            Core Legion Framework.
 -- description:         
 homepage:            https://github.com/owensmurray/om-legion
@@ -24,7 +24,6 @@ library
     OM.Legion.Conduit
     OM.Legion.Management
     OM.Legion.Runtime
-    OM.Legion.UUID
   -- other-extensions:    
   build-depends:
     aeson              >= 1.4.2.0  && < 1.5,
