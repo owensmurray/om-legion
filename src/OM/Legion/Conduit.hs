@@ -6,14 +6,12 @@ module OM.Legion.Conduit (
 ) where
 
 
-import Control.Concurrent.Chan (Chan, writeChan, readChan)
+import Control.Concurrent.Chan (Chan, readChan, writeChan)
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Data.Conduit (Source, Sink, yield, awaitForever)
+import Data.Conduit (Sink, Source, awaitForever, yield)
 
 
-{- |
-  Convert a channel into a Source.
--}
+{- | Convert a channel into a Source. -}
 chanToSource :: (MonadIO io) => Chan a -> Source io a
 chanToSource chan = do
   {-
@@ -36,9 +34,7 @@ chanToSource chan = do
   chanToSource chan
 
 
-{- |
- Convert a channel into a Sink.
--}
+{- | Convert a channel into a Sink. -}
 chanToSink :: (MonadIO io) => Chan a -> Sink a io ()
 chanToSink chan = awaitForever (liftIO . writeChan chan)
 
