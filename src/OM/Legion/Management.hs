@@ -16,7 +16,7 @@ module OM.Legion.Management (
   Peer(..),
   Cluster(..),
   TopologyEvent(..),
-  ClusterEvent(..),
+  ClusterEvent,
   ClusterGoal(..),
   RebalanceOrdinal,
   Action(..),
