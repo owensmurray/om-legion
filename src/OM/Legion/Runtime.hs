@@ -841,7 +841,6 @@ kickoffRebalance = do
         $(logDebug) $ "Launching peer: " <> showt peer
         void . liftIO $ async (launch peer)
         modify (\rs -> rs { rsLastOrd = succ (rsLastOrd rs)})
-        -- liftIO $ launch peer
 
 
 {- | Wait on a consistent response for the given state id. -}

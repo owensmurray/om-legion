@@ -9,7 +9,7 @@
 {-# LANGUAGE UndecidableInstances #-}
 
 {- |
-  Description: This module contains the algorith for cluster
+  Description: This module contains the algorithm for cluster
                self-management.
 -}
 module OM.Legion.Management (
@@ -189,7 +189,7 @@ newtype RebalanceOrdinal = RebalanceOrdinal {
   deriving newtype (Show, Enum, ToJSON, Binary, Bounded, Eq, Ord)
 
 
-{- | Result on the cluster of having performed a rebalance action.  -}
+{- | Result of the cluster of having performed a rebalance action.  -}
 actionResult :: Action -> Cluster -> Cluster
 actionResult action c =
   let
