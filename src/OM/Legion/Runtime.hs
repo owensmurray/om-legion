@@ -71,7 +71,8 @@ import Data.Proxy (Proxy(Proxy))
 import Data.Set ((\\), Set)
 import Data.String (IsString, fromString)
 import Data.Text (Text)
-import Data.Time (DiffTime, UTCTime, diffUTCTime, getCurrentTime)
+import Data.Time (DiffTime, UTCTime, addUTCTime, diffUTCTime,
+  getCurrentTime, utctDayTime)
 import Data.UUID (UUID)
 import Data.UUID.V1 (nextUUID)
 import Data.Void (Void)
@@ -83,7 +84,8 @@ import OM.Legion.Conduit (chanToSink)
 import OM.Legion.Management (Action(Commission, Decommission), Peer(Peer),
   TopologyEvent(CommissionComplete, Terminated, UpdateClusterGoal),
   ClusterEvent, ClusterGoal, RebalanceOrdinal, TopologySensitive,
-  allowDecommission, cOrd, cPlan, topEvent, userEvent)
+  allowDecommission, cOrd, cPlan, cgNumNodes, topEvent, unPeerOrdinal,
+  userEvent)
 import OM.Logging (withPrefix)
 import OM.PowerState (Event, EventPack, Output, PowerState, State,
   StateId, events, infimumId, infimumValue, origin, projParticipants)
@@ -478,20 +480,55 @@ executeRuntime
         )
     fail "Legion runtime stopped."
   where
-
     clusterResizeLoop :: (MonadCatch m, MonadLoggerIO m) => m Void
-    clusterResizeLoop = do
-      tryAny (
-          Fork.cast runtimeChan . ManagementEvent . UpdateClusterGoal
-            =<< liftIO getClusterGoal
-        ) >>= \case
-          Left err ->
+    clusterResizeLoop =
+        tryAny (liftIO getClusterGoal) >>= \case
+          Left err -> do
             $(logWarn)
               $ "Problem when checking to see if we need to "
               <> "resize the cluser: " <> showt err
-          Right _ -> return ()
-      liftIO (threadDelay (5_000_000))
-      clusterResizeLoop
+            liftIO (threadDelay (5_000_000))
+            clusterResizeLoop
+          Right goal -> do
+            Fork.cast runtimeChan . ManagementEvent . UpdateClusterGoal $ goal
+            sleepUntilTime goal
+            clusterResizeLoop
+      where
+        sleepUntilTime :: (MonadIO m) => ClusterGoal -> m ()
+        sleepUntilTime goal = do
+          now <- liftIO getCurrentTime
+          let
+            periodLength :: Int
+            periodLength = cgNumNodes goal * 5
+
+            periodStart :: Int
+            periodStart =
+              periodLength * (truncate (utctDayTime now) `quot` periodLength)
+            
+            offset :: Int
+            offset = (fromIntegral (unPeerOrdinal (rsSelf rts)) - 1) * 5
+
+            nextTime :: UTCTime
+            nextTime =
+              let
+                firstOffsetAfterCurrentPeriod =
+                  addUTCTime (fromIntegral (periodStart + offset)) now
+              in
+                if firstOffsetAfterCurrentPeriod <= now
+                  then
+                    firstOffsetAfterCurrentPeriod
+                  else
+                    addUTCTime
+                      (fromIntegral periodLength)
+                      firstOffsetAfterCurrentPeriod
+
+            sleepTime :: Int
+            sleepTime =
+              truncate $
+                (realToFrac (diffUTCTime nextTime now) :: Rational)
+                * 1_000_000
+
+          liftIO (threadDelay sleepTime)
 
 
     {- | Like 'race_', but with logging. -}

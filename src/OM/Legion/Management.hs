@@ -157,7 +157,7 @@ class TopologySensitive e where
 
 {- | The identification of a node within the legion cluster. -}
 newtype Peer = Peer {
-    _unPeerOrdinal :: Natural
+    unPeerOrdinal :: Natural
     {- TODO: find a suitable 'Positive' implementation. -}
   }
   deriving newtype (
