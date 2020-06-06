@@ -26,7 +26,7 @@ module OM.Legion.Management (
 ) where
 
 
-import Data.Aeson (FromJSON, ToJSON, ToJSONKey)
+import Data.Aeson (FromJSON, FromJSONKey, ToJSON, ToJSONKey)
 import Data.Binary (Binary)
 import Data.Default.Class (Default, def)
 import Data.Proxy (Proxy(Proxy))
@@ -162,7 +162,7 @@ newtype Peer = Peer {
   }
   deriving newtype (
     Eq, Ord, Show, ToJSON, Binary, ToJSONKey, Enum, Num, Integral,
-    Real, FromJSON
+    Real, FromJSON, FromJSONKey
   )
 
 
