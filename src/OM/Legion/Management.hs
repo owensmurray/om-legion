@@ -37,6 +37,7 @@ import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import OM.PowerState (EventResult(Pure, SystemError), Event, Output,
   State, apply)
+import Web.HttpApiData (FromHttpApiData, ToHttpApiData)
 import qualified Data.Set as Set
 
 
@@ -162,7 +163,7 @@ newtype Peer = Peer {
   }
   deriving newtype (
     Eq, Ord, Show, ToJSON, Binary, ToJSONKey, Enum, Num, Integral,
-    Real, FromJSON, FromJSONKey
+    Real, FromJSON, FromJSONKey, FromHttpApiData, ToHttpApiData
   )
 
 
