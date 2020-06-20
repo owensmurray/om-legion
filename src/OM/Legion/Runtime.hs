@@ -1324,3 +1324,22 @@ newtype ClusterName = ClusterName {
   )
 
 
+-- {- |
+--   Property that ensures anything produced by `legionPeer` can be parsed by
+--   `parseLegionPeer`.
+-- -}
+-- prop_parseLegionPeer :: Property
+-- prop_parseLegionPeer =
+--   let
+--     values = do
+--       name <- ClusterName . T.pack <$> arbitrary
+--       ord <- PeerOrdinal . fromInteger <$> choose (0, 99)
+--       let nodeName = legionPeer name ord
+--       return $
+--         if Just (name, ord) == parseLegionPeer nodeName
+--           then Nothing
+--           else Just $ "Failed on: " <> show nodeName
+--   in
+--     forAll values (== Nothing)
+
+
