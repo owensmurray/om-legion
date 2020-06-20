@@ -88,7 +88,8 @@ import OM.Legion.Management (Action(Commission, Decommission), Peer(Peer),
   userEvent)
 import OM.Logging (withPrefix)
 import OM.PowerState (Event, EventPack, Output, PowerState, State,
-  StateId, events, infimumId, infimumValue, origin, projParticipants)
+  StateId, divergent, events, infimumId, infimumValue, origin,
+  projParticipants)
 import OM.PowerState.Monad (PowerStateT, acknowledge, acknowledgeAs,
   disassociate, event, fullMerge, merge, participate, runPowerStateT)
 import OM.Show (showt)
@@ -494,7 +495,7 @@ executeRuntime
             sleepUntilTime goal
             clusterResizeLoop
       where
-        sleepUntilTime :: (MonadIO m) => ClusterGoal -> m ()
+        sleepUntilTime :: (MonadLoggerIO m) => ClusterGoal -> m ()
         sleepUntilTime goal = do
           now <- liftIO getCurrentTime
           let
@@ -508,25 +509,29 @@ executeRuntime
             offset :: Int
             offset = (fromIntegral (unPeerOrdinal (rsSelf rts)) - 1) * 5
 
+            firstOffsetAfterCurrentPeriod =
+              addUTCTime (fromIntegral (periodStart + offset)) now {utctDayTime = 0}
+
             nextTime :: UTCTime
             nextTime =
-              let
-                firstOffsetAfterCurrentPeriod =
-                  addUTCTime (fromIntegral (periodStart + offset)) now
-              in
-                if firstOffsetAfterCurrentPeriod <= now
-                  then
+              if firstOffsetAfterCurrentPeriod <= now
+                then
+                  addUTCTime
+                    (fromIntegral periodLength)
                     firstOffsetAfterCurrentPeriod
-                  else
-                    addUTCTime
-                      (fromIntegral periodLength)
-                      firstOffsetAfterCurrentPeriod
+                else
+                  firstOffsetAfterCurrentPeriod
 
             sleepTime :: Int
             sleepTime =
               truncate $
                 (realToFrac (diffUTCTime nextTime now) :: Rational)
                 * 1_000_000
+
+          $(logDebug)
+            $ "Sleeping until " <> showt nextTime
+            <> " (" <> showt sleepTime <> ")."
+            <> showt (now, periodLength, periodStart, offset, firstOffsetAfterCurrentPeriod)
 
           liftIO (threadDelay sleepTime)
 
@@ -875,7 +880,12 @@ kickoffRebalance = do
         | otherwise -> pure ()
       Commission peer : _ -> do
         $(logDebug) $ "Launching peer: " <> showt peer
-        void . liftIO $ async (launch peer)
+        logging <- askLoggerIO
+        void . liftIO . async . (`runLoggingT` logging) $ do
+          $(logInfo) "Calling launch."
+          lift (tryAny (launch peer)) >>= \case
+            Left err -> $(logError) $ "Launch failed with: " <> showt (peer, err)
+            Right () -> $(logInfo) $ "Launch of peer complete: " <> showt peer
         modify (\rs -> rs { rsLastOrd = succ (rsLastOrd rs)})
 
 
@@ -912,6 +922,10 @@ propagate = do
         PS.allParticipants cluster
 
     now <- liftIO getCurrentTime
+    let
+      isDivergent :: Bool
+      isDivergent = not (Map.null (divergent cluster))
+
     liftIO (shuffleM (Set.toList targets)) >>= \case
       [] -> return ()
       target:_ ->
@@ -920,14 +934,16 @@ propagate = do
           infimum was made, try sending out a full merge instead of just
           the event pack.
         -}
-        if infimumId cluster == checkSid && diffUTCTime now checkTime > 10
-          then do
-            $(logWarn)
-              $ "Sending full merge because no progress has been "
-              <> "made on the cluster state."
-            sendPeer (PMFullMerge cluster) target
-            modify (\rs -> rs {rsCheckpointTime = now})
-          else sendPeer (PMMerge (events target cluster)) target
+        if isDivergent
+           && infimumId cluster == checkSid
+           && diffUTCTime now checkTime > 10
+        then do
+          $(logWarn)
+            $ "Sending full merge because no progress has been "
+            <> "made on the cluster state."
+          sendPeer (PMFullMerge cluster) target
+          modify (\rs -> rs {rsCheckpointTime = now})
+        else sendPeer (PMMerge (events target cluster)) target
     modify (\rs -> rs {
         rsCheckpointSid = infimumId cluster,
         rsCheckpointTime =
@@ -935,7 +951,7 @@ propagate = do
             Don't advance the checkpoint time unless the infimum has
             also advanced.
           -}
-          if infimumId cluster == checkSid
+          if infimumId cluster == checkSid && isDivergent
             then rsCheckpointTime rs
             else now
       })
@@ -1322,5 +1338,24 @@ newtype ClusterName = ClusterName {
     IsString, Show, Binary, Eq, ToJSON, FromJSON, Ord, ToHttpApiData,
     FromHttpApiData
   )
+
+
+-- {- |
+--   Property that ensures anything produced by `legionPeer` can be parsed by
+--   `parseLegionPeer`.
+-- -}
+-- prop_parseLegionPeer :: Property
+-- prop_parseLegionPeer =
+--   let
+--     values = do
+--       name <- ClusterName . T.pack <$> arbitrary
+--       ord <- PeerOrdinal . fromInteger <$> choose (0, 99)
+--       let nodeName = legionPeer name ord
+--       return $
+--         if Just (name, ord) == parseLegionPeer nodeName
+--           then Nothing
+--           else Just $ "Failed on: " <> show nodeName
+--   in
+--     forAll values (== Nothing)
 
 
