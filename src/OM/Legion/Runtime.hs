@@ -53,8 +53,8 @@ import Control.Exception.Safe (MonadCatch, finally, tryAny)
 import Control.Monad (join, mzero, void, when)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Identity (runIdentity)
-import Control.Monad.Logger (LogStr, LoggingT, MonadLoggerIO, askLoggerIO,
-  logDebug, logError, logInfo, logWarn, runLoggingT)
+import Control.Monad.Logger (LogStr, LoggingT, MonadLogger, MonadLoggerIO,
+  askLoggerIO, logDebug, logError, logInfo, logWarn, runLoggingT)
 import Control.Monad.State (MonadState, StateT, evalStateT, get, gets,
   modify, put, runStateT)
 import Control.Monad.Trans.Class (lift)
@@ -605,7 +605,7 @@ executeRuntime
 
 
 {- | Handle any outstanding joins. -}
-handleOutstandingJoins :: (MonadIO m) => StateT (RuntimeState e) m ()
+handleOutstandingJoins :: (MonadLoggerIO m) => StateT (RuntimeState e) m ()
 handleOutstandingJoins = do
   state@RuntimeState {rsJoins, rsClusterState} <- get
   let
@@ -615,8 +615,10 @@ handleOutstandingJoins = do
         rsJoins
   put state {rsJoins = pending}
   sequence_ [
-      respond responder (JoinOk rsClusterState)
-      | (_, responder) <- Map.toList consistent
+      do
+        $(logInfo) $ "Completing join (" <> showt sid <> ")."
+        respond responder (JoinOk rsClusterState)
+      | (sid, responder) <- Map.toList consistent
     ]
 
 
@@ -691,7 +693,7 @@ handleRuntimeMessage (Join (JoinRequest peer) responder) = do
       $(logInfo) $ "Join immediately with: " <> showt rsClusterState
       respond responder (JoinOk rsClusterState)
     else do
-      $(logInfo) "Join delayed."
+      $(logInfo) $ "Join delayed (" <> showt sid <> ")."
       modify (\s -> s {rsJoins = Map.insert sid responder (rsJoins s)})
 
 handleRuntimeMessage (ReadState responder) =
@@ -963,8 +965,8 @@ propagate = do
       in the cluster.
     -}
     disconnectObsolete
-      :: ( MonadIO m
-         , MonadState (RuntimeState e) m
+      :: ( MonadState (RuntimeState e) m
+         , MonadLogger m
          )
       => m ()
     disconnectObsolete = do
@@ -1004,12 +1006,13 @@ sendPeer msg peer = do
 
 {- | Disconnect the connection to a peer. -}
 disconnect
-  :: ( MonadIO m
+  :: ( MonadLogger m
      , MonadState (RuntimeState e) m
      )
   => Peer
   -> m ()
-disconnect peer =
+disconnect peer = do
+  $(logInfo) $ "Disconnecting: " <> showt peer
   modify (\state@RuntimeState {rsConnections} -> state {
     rsConnections = Map.delete peer rsConnections
   })
@@ -1027,6 +1030,7 @@ createConnection
   => Peer
   -> m (PeerMessage e -> w ())
 createConnection peer = do
+    $(logInfo) $ "Creating connection to: " <> showt peer
     rts@RuntimeState {rsSelf} <- get
     latest <- liftIO $ atomically (newTVar (Just []))
     logging <- askLoggerIO
@@ -1052,9 +1056,7 @@ createConnection peer = do
         join . liftIO . atomically $
           readTVar latest >>= \case
             Nothing ->
-              return $ modify (\state -> state {
-                  rsConnections = Map.delete peer (rsConnections state)
-                })
+              (pure . (`runLoggingT` logging) . disconnect) peer
             Just msgs -> do
               writeTVar latest (
                   Just $ case msg of
