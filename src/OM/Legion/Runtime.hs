@@ -972,7 +972,7 @@ propagate = do
     disconnectObsolete = do
       (cluster, conns) <- gets (rsClusterState &&& rsConnections)
       mapM_ disconnect $
-        PS.allParticipants cluster \\ Map.keysSet conns
+        Map.keysSet conns \\ PS.allParticipants cluster
 
 
 {- | Send a peer message, creating a new connection if need be. -}
