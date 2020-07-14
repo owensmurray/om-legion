@@ -26,6 +26,7 @@ module OM.Legion (
   Peer,
   ClusterName(..),
   ClusterGoal(..),
+  idealPeers,
   parseLegionPeer,
   legionPeer,
 
@@ -43,7 +44,8 @@ module OM.Legion (
 
 import OM.Legion.Management (ClusterGoal(ClusterGoal, cgNumNodes),
   TopologyEvent(CommissionComplete, Terminated, UpdateClusterGoal),
-  TopologySensitive(allowDecommission, applyTopology), ClusterEvent, Peer)
+  TopologySensitive(allowDecommission, applyTopology), ClusterEvent,
+  Peer, idealPeers)
 import OM.Legion.Runtime (ClusterName(ClusterName, unClusterName),
   StartupMode(JoinCluster, NewCluster, Recover), Runtime, applyConsistent,
   applyFast, broadcall, broadcast, call, cast, eject, forkLegionary,
