@@ -23,6 +23,7 @@ module OM.Legion.Management (
   TopologySensitive(..),
   userEvent,
   topEvent,
+  idealPeers,
 ) where
 
 
@@ -245,20 +246,21 @@ plan :: ClusterGoal -> Set Peer -> [Action]
 plan goal online = 
     commissionMissing <> decommissionObsolete
   where
-    {- | The ideal number of peers online, which is all of them. -}
-    ideal :: Set Peer
-    ideal = Set.fromList (Peer . fromIntegral <$> [1 .. cgNumNodes goal])
-
     commissionMissing :: [Action]
     commissionMissing =
       [
         Commission peer
-        | peer <- Set.toAscList ideal
+        | peer <- Set.toAscList (idealPeers goal)
         , not (peer `member` online)
       ]
       
     decommissionObsolete :: [Action]
     decommissionObsolete =
-      Decommission <$> Set.toAscList (online \\ ideal)
+      Decommission <$> Set.toAscList (online \\ idealPeers goal)
+
+
+{- | The ideal set of peers for the given cluster goal. -}
+idealPeers :: ClusterGoal -> Set Peer
+idealPeers goal = Set.fromList (Peer . fromIntegral <$> [1 .. cgNumNodes goal])
 
 
