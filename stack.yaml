@@ -5,12 +5,12 @@ packages:
 extra-deps:
 - cached-io-1.1.0.0
 - load-balancing-1.0.1.3
-- om-discovery-client-0.1.1.3
+- om-discovery-client-0.1.2.0
 - om-fork-0.5.1.0
 - om-json-0.2.5.1
 - om-lift-0.1.0.2
 - om-logging-0.4.0.1
-- om-powerstate-4.2.1.0
+- om-powerstate-4.3.0.0
 - om-show-0.1.1.0
 - om-socket-0.7.0.2
 resolver: lts-14.27
