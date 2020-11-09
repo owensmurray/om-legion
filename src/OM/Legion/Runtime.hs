@@ -684,8 +684,9 @@ handleRuntimeMessage (Join (JoinRequest peer) responder) = do
   sid <- updateCluster (do
       disassociate peer
       void $ event (topEvent (CommissionComplete peer))
+      sid <- participate peer
       acknowledgeAs peer
-      participate peer
+      pure sid
     )
   RuntimeState {rsClusterState} <- get
   if sid <= infimumId rsClusterState
