@@ -16,6 +16,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# OPTIONS_GHC -Wmissing-import-lists #-}
 
 {- | The meat of the Legion runtime implementation. -}
 module OM.Legion.Runtime (
@@ -66,7 +67,6 @@ import Data.Conduit ((.|), ConduitT, awaitForever, runConduit, yield)
 import Data.Default.Class (Default)
 import Data.Int (Int64)
 import Data.Map (Map)
-import Data.Monoid ((<>))
 import Data.Proxy (Proxy(Proxy))
 import Data.Set ((\\), Set)
 import Data.String (IsString, fromString)
@@ -436,8 +436,11 @@ parseLegionPeer =
   framework settings. This function never returns (except maybe with an
   exception if something goes horribly wrong).
 -}
-executeRuntime :: (
-      Constraints e, MonadCatch m, MonadLoggerIO m
+executeRuntime
+  :: ( Constraints e
+     , MonadCatch m
+     , MonadLoggerIO m
+     , MonadFail m
     )
   => IO ClusterGoal
   -> (ByteString -> IO ByteString)
@@ -543,7 +546,7 @@ executeRuntime
       logging <- askLoggerIO
       liftIO $ race_ (runLoggingT a logging) (runLoggingT b logging)
 
-    runPeerListener :: (MonadLoggerIO m) => m ()
+    runPeerListener :: (MonadLoggerIO m, MonadFail m) => m ()
     runPeerListener =
       let
         addy :: AddressDescription
@@ -574,7 +577,7 @@ executeRuntime
           .| chanToSink (unRChan runtimeChan)
         )
 
-    runJoinListener :: (MonadLoggerIO m) => m ()
+    runJoinListener :: (MonadLoggerIO m, MonadFail m) => m ()
     runJoinListener =
       let
         addy :: AddressDescription
@@ -684,8 +687,9 @@ handleRuntimeMessage (Join (JoinRequest peer) responder) = do
   sid <- updateCluster (do
       disassociate peer
       void $ event (topEvent (CommissionComplete peer))
+      sid <- participate peer
       acknowledgeAs peer
-      participate peer
+      pure sid
     )
   RuntimeState {rsClusterState} <- get
   if sid <= infimumId rsClusterState

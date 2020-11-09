@@ -7,6 +7,7 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# OPTIONS_GHC -Wmissing-import-lists #-}
 
 {- |
   Description: This module contains the algorithm for cluster
@@ -31,7 +32,6 @@ import Data.Aeson (FromJSON, FromJSONKey, ToJSON, ToJSONKey)
 import Data.Binary (Binary)
 import Data.Default.Class (Default, def)
 import Data.Proxy (Proxy(Proxy))
-import Data.Semigroup ((<>))
 import Data.Set ((\\), Set, member)
 import Data.Word (Word64)
 import GHC.Generics (Generic)
