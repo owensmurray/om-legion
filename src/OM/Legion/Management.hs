@@ -30,14 +30,14 @@ module OM.Legion.Management (
 
 import Data.Aeson (FromJSON, FromJSONKey, ToJSON, ToJSONKey)
 import Data.Binary (Binary)
+import Data.CRDT.EventFold (EventResult(Pure, SystemError), Event,
+  Output, State, apply)
 import Data.Default.Class (Default, def)
 import Data.Proxy (Proxy(Proxy))
 import Data.Set ((\\), Set, member)
 import Data.Word (Word64)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
-import OM.PowerState (EventResult(Pure, SystemError), Event, Output,
-  State, apply)
 import Web.HttpApiData (FromHttpApiData, ToHttpApiData)
 import qualified Data.Set as Set
 

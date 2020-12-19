@@ -3,11 +3,11 @@ extra-package-dbs: []
 packages:
 - .
 extra-deps:
-  - http://localhost:4563/package/om-discovery-client-0.1.2.1.tar.gz
+  - crdt-event-fold-1.3.0.0
   - http://localhost:4563/package/om-fork-0.5.1.1.tar.gz
-  - http://localhost:4563/package/om-logging-0.4.0.2.tar.gz
-  - http://localhost:4563/package/om-powerstate-4.4.0.0.tar.gz
   - http://localhost:4563/package/om-show-0.1.1.1.tar.gz
+  - http://localhost:4563/package/om-logging-0.4.0.2.tar.gz
   - http://localhost:4563/package/om-socket-0.8.0.0.tar.gz
   - http://localhost:4563/package/load-balancing-1.0.2.0.tar.gz
-resolver: lts-16.20
+  - http://localhost:4563/package/om-discovery-client-0.1.2.1.tar.gz
+resolver: lts-16.26
