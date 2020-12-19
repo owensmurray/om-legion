@@ -45,19 +45,18 @@ module OM.Legion.Runtime (
 
 
 import Control.Arrow ((&&&))
-import Control.Concurrent (Chan, newChan, readChan, threadDelay,
-  writeChan)
+import Control.Concurrent (Chan, newChan, readChan, threadDelay, writeChan)
 import Control.Concurrent.Async (Async, async, race_)
-import Control.Concurrent.STM (TVar, atomically, newTVar, readTVar,
-  retry, writeTVar)
+import Control.Concurrent.STM (TVar, atomically, newTVar, readTVar, retry, writeTVar)
 import Control.Exception.Safe (MonadCatch, finally, tryAny)
 import Control.Monad (join, mzero, void, when)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Identity (runIdentity)
-import Control.Monad.Logger (LogStr, LoggingT, MonadLogger, MonadLoggerIO,
-  askLoggerIO, logDebug, logError, logInfo, logWarn, runLoggingT)
-import Control.Monad.State (MonadState, StateT, evalStateT, get, gets,
-  modify, put, runStateT)
+import Control.Monad.Logger
+  ( LogStr, LoggingT, MonadLogger, MonadLoggerIO, askLoggerIO, logDebug, logError, logInfo, logWarn
+  , runLoggingT
+  )
+import Control.Monad.State (MonadState, StateT, evalStateT, get, gets, modify, put, runStateT)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (runExceptT)
 import Data.Aeson (FromJSON, ToJSON)
@@ -71,8 +70,7 @@ import Data.Proxy (Proxy(Proxy))
 import Data.Set ((\\), Set)
 import Data.String (IsString, fromString)
 import Data.Text (Text)
-import Data.Time (DiffTime, UTCTime, addUTCTime, diffUTCTime,
-  getCurrentTime, utctDayTime)
+import Data.Time (DiffTime, UTCTime, addUTCTime, diffUTCTime, getCurrentTime, utctDayTime)
 import Data.UUID (UUID)
 import Data.UUID.V1 (nextUUID)
 import Data.Void (Void)
@@ -81,24 +79,31 @@ import Network.Socket (PortNumber)
 import Numeric.Natural (Natural)
 import OM.Fork (Actor, Background, Msg, Responder, actorChan)
 import OM.Legion.Conduit (chanToSink)
-import OM.Legion.Management (Action(Commission, Decommission), Peer(Peer),
-  TopologyEvent(CommissionComplete, Terminated, UpdateClusterGoal),
-  ClusterEvent, ClusterGoal, RebalanceOrdinal, TopologySensitive,
-  allowDecommission, cOrd, cPlan, cgNumNodes, topEvent, unPeerOrdinal,
-  userEvent)
+import OM.Legion.Management
+  ( Action(Commission, Decommission), Peer(Peer)
+  , TopologyEvent(CommissionComplete, Terminated, UpdateClusterGoal), ClusterEvent, ClusterGoal
+  , RebalanceOrdinal, TopologySensitive, allowDecommission, cOrd, cPlan, cgNumNodes, topEvent
+  , unPeerOrdinal, userEvent
+  )
 import OM.Logging (withPrefix)
-import OM.PowerState (Event, EventPack, Output, PowerState, State,
-  StateId, divergent, events, infimumId, infimumValue, origin,
-  projParticipants)
-import OM.PowerState.Monad (PowerStateT, acknowledge, acknowledgeAs,
-  disassociate, event, fullMerge, merge, participate, runPowerStateT)
+import OM.PowerState
+  ( Event, EventPack, Output, PowerState, State, StateId, divergent, events, infimumId, infimumValue
+  , origin, projParticipants
+  )
+import OM.PowerState.Monad
+  ( PowerStateT, acknowledge, acknowledgeAs, disassociate, event, fullMerge, merge, participate
+  , runPowerStateT
+  )
 import OM.Show (showt)
-import OM.Socket (AddressDescription(AddressDescription),
-  Endpoint(Endpoint), connectServer, openEgress, openIngress, openServer)
+import OM.Socket
+  ( AddressDescription(AddressDescription), Endpoint(Endpoint), connectServer, openEgress
+  , openIngress, openServer
+  )
 import System.Clock (TimeSpec)
 import System.Random.Shuffle (shuffleM)
-import Text.Megaparsec (MonadParsec, Parsec, Token, anySingle, eof,
-  lookAhead, manyTill, parseMaybe, satisfy)
+import Text.Megaparsec
+  ( MonadParsec, Parsec, Token, anySingle, eof, lookAhead, manyTill, parseMaybe, satisfy
+  )
 import Web.HttpApiData (FromHttpApiData, ToHttpApiData)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
@@ -152,12 +157,23 @@ data RuntimeState e = RuntimeState {
 
 
 {- | Fork the Legion runtime system. -}
-forkLegionary :: (
-      Binary (State e), Binary e, Default (State e), Eq e, Event e,
-      MonadCatch m, MonadLoggerIO m, Show e, ToJSON (State e), ToJSON e,
-      Show (Output e), Eq (Output e), ToJSON (Output e), Binary (Output e),
-      TopologySensitive e
-    )
+forkLegionary
+  :: (  Binary (State e)
+     , Binary e
+     , Default (State e)
+     , Eq e
+     , Event e
+     , MonadCatch m
+     , MonadLoggerIO m
+     , Show e
+     , ToJSON (State e)
+     , ToJSON e
+     , Show (Output e)
+     , Eq (Output e)
+     , ToJSON (Output e)
+     , Binary (Output e)
+     , TopologySensitive e
+     )
   => IO ClusterGoal
      {- ^ How to get the cluster goal from the connonical source. -}
   -> (Peer -> IO ()) {- ^ How to launch a new peer. -}
@@ -339,14 +355,15 @@ data RuntimeMessage e
   | SendCallResponse Peer MessageId ByteString
   | HandleCallResponse Peer MessageId ByteString
   | Resend (Responder ())
-deriving instance (
-    Show e,
-    Show (Output e),
-    ToJSON e,
-    ToJSON (State e),
-    ToJSON (Output e)
-  )
-  => Show (RuntimeMessage e)
+deriving instance
+    ( Show e
+    , Show (Output e)
+    , ToJSON e
+    , ToJSON (State e)
+    , ToJSON (Output e)
+    )
+  =>
+    Show (RuntimeMessage e)
 
 
 {- | The types of messages that can be sent from one peer to another. -}
@@ -362,10 +379,15 @@ data PeerMessage e
   | PMCallResponse Peer MessageId ByteString
     {- ^ Send a response to a user call message. -}
   deriving (Generic)
-deriving instance (
-    Show e, Show (Output e), ToJSON e, ToJSON (State e), ToJSON (Output e)
-  )
-  => Show (PeerMessage e)
+deriving instance
+    ( Show e
+    , Show (Output e)
+    , ToJSON e
+    , ToJSON (State e)
+    , ToJSON (Output e)
+    )
+  =>
+    Show (PeerMessage e)
 instance (Binary e, Binary (Output e), Binary (State e)) => Binary (PeerMessage e)
 
 
@@ -1153,7 +1175,10 @@ data StartupMode e
       (PowerState ClusterName Peer (ClusterEvent e))
       {- ^ The last acknowledged state we had before we crashed. -}
 deriving instance
-    (ToJSON e, ToJSON (State e), ToJSON (Output e))
+    ( ToJSON e
+    , ToJSON (State e)
+    , ToJSON (Output e)
+    )
   =>
     Show (StartupMode e)
 
@@ -1287,10 +1312,20 @@ nextMessageId :: MessageId -> MessageId
 nextMessageId (M sequenceId ord) = M sequenceId (succ ord)
 
 
-type Constraints e = (
-    Binary (State e), Binary e, Default (State e), Eq e, Event e, Show e,
-    ToJSON (State e), ToJSON e, Show (Output e), Eq (Output e), ToJSON
-    (Output e), Binary (Output e), TopologySensitive e
+type Constraints e =
+  ( Binary (State e)
+  , Binary e
+  , Default (State e)
+  , Eq e
+  , Event e
+  , Show e
+  , ToJSON (State e)
+  , ToJSON e
+  , Show (Output e)
+  , Eq (Output e)
+  , ToJSON (Output e)
+  , Binary (Output e)
+  , TopologySensitive e
   )
 
 
