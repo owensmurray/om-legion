@@ -155,18 +155,18 @@ data RuntimeState e = RuntimeState {
 
 {- | Fork the Legion runtime system. -}
 forkLegionary
-  :: ( Default (State e)
-     , Event e
-     , Show e
-     , Show (State e)
-     , Show (Output e)
-     , Eq e
-     , Eq (Output e)
+  :: ( Binary (Output e)
      , Binary (State e)
      , Binary e
-     , Binary (Output e)
-     , TopologySensitive e
+     , Default (State e)
+     , Eq (Output e)
+     , Eq e
+     , Event e
      , MonadLoggerIO m
+     , Show (Output e)
+     , Show (State e)
+     , Show e
+     , TopologySensitive e
      )
   => IO ClusterGoal
      {- ^ How to get the cluster goal from the connonical source. -}
@@ -194,13 +194,16 @@ forkLegionary
     rts <- makeRuntimeState notify startupMode launch terminate
     runtimeChan <- RChan <$> liftIO newChan
     logging <- withPrefix (logPrefix (rsSelf rts)) <$> askLoggerIO
-    asyncHandle <- liftIO . async . (`runLoggingT` logging) $
-      executeRuntime
-        getClusterGoal
-        handleUserCall
-        handleUserCast
-        rts
-        runtimeChan
+    asyncHandle <-
+      liftIO
+      . async
+      . (`runLoggingT` logging)
+      $ executeRuntime
+          getClusterGoal
+          handleUserCall
+          handleUserCast
+          rts
+          runtimeChan
     let
       clusterId :: ClusterName
       clusterId = EF.origin (rsClusterState rts)
