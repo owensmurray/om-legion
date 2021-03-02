@@ -1196,7 +1196,6 @@ makeRuntimeState
             void $ event (topEvent (UpdateClusterGoal goal))
             void $ event (topEvent (CommissionComplete self))
           )
-        
     in
       makeRuntimeState
         notify
