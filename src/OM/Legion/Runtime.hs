@@ -47,12 +47,13 @@ module OM.Legion.Runtime (
 import Control.Arrow ((&&&))
 import Control.Concurrent (Chan, newChan, readChan, threadDelay,
   writeChan)
-import Control.Concurrent.Async (Async, async, race_)
+import Control.Concurrent.Async (async, race_)
 import Control.Concurrent.STM (TVar, atomically, newTVar, readTVar,
   retry, writeTVar)
 import Control.Exception.Safe (MonadCatch, finally, tryAny)
 import Control.Monad (join, mzero, void, when)
-import Control.Monad.IO.Class (MonadIO, liftIO)
+import Control.Monad.IO.Class (MonadIO(liftIO))
+import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Identity (runIdentity)
 import Control.Monad.Logger (LogStr, LoggingT, MonadLogger, MonadLoggerIO,
   askLoggerIO, logDebug, logError, logInfo, logWarn, runLoggingT)
@@ -83,7 +84,7 @@ import Data.Void (Void)
 import GHC.Generics (Generic)
 import Network.Socket (PortNumber)
 import Numeric.Natural (Natural)
-import OM.Fork (Actor, Background, Msg, Responder, actorChan)
+import OM.Fork (Actor, Msg, Race, Responder, actorChan, race)
 import OM.Legion.Conduit (chanToSink)
 import OM.Legion.Management (Action(Commission, Decommission), Peer(Peer),
   TopologyEvent(CommissionComplete, Terminated, UpdateClusterGoal),
@@ -107,9 +108,7 @@ import qualified OM.Fork as Fork
 import qualified System.Clock as Clock
 import qualified Text.Megaparsec as M
 
-
 {-# ANN module ("HLint: ignore Redundant <$>" :: String) #-}
-
 
 {- | The Legionary runtime state. -}
 data RuntimeState e = RuntimeState {
@@ -163,6 +162,8 @@ forkLegionary
      , Eq e
      , Event e
      , MonadLoggerIO m
+     , MonadUnliftIO m
+     , Race
      , Show (Output e)
      , Show (State e)
      , Show e
@@ -194,9 +195,8 @@ forkLegionary
     rts <- makeRuntimeState notify startupMode launch terminate
     runtimeChan <- RChan <$> liftIO newChan
     logging <- withPrefix (logPrefix (rsSelf rts)) <$> askLoggerIO
-    asyncHandle <-
-      liftIO
-      . async
+    race 
+      . liftIO
       . (`runLoggingT` logging)
       $ executeRuntime
           getClusterGoal
@@ -210,7 +210,6 @@ forkLegionary
     return Runtime {
              rChan = runtimeChan,
              rSelf = rsSelf rts,
-            rAsync = asyncHandle,
         rClusterId = clusterId
       }
   where
@@ -222,7 +221,6 @@ forkLegionary
 data Runtime e = Runtime {
          rChan :: RChan e,
          rSelf :: Peer,
-        rAsync :: Async Void,
     rClusterId :: ClusterName
   }
 instance Actor (Runtime e) where
@@ -321,15 +319,6 @@ eject runtime peer = Fork.cast runtime (Eject peer)
 {- | Get the identifier for the local peer. -}
 getSelf :: Runtime e -> Peer
 getSelf = rSelf
-
-
-{- |
-  Get the async handle on the background legion thread, in case you want
-  to wait for it to complete (which should never happen except in the
-  case of an error).
--}
-instance Background (Runtime e) where
-  getAsync = rAsync
 
 
 {- | The types of messages that can be sent to the runtime. -}

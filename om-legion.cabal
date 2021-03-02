@@ -41,7 +41,7 @@ library
     monad-logger       >= 0.3.36    && < 0.4,
     mtl                >= 2.2.2     && < 2.3,
     network            >= 3.1.1.1   && < 3.2,
-    om-fork            >= 0.5.1.1   && < 0.6,
+    om-fork            >= 0.6.0.0   && < 0.7,
     om-logging         >= 0.4.0.2   && < 0.5,
     om-show            >= 0.1.1.1   && < 0.2,
     om-socket          >= 0.8.0.0   && < 0.9,
@@ -51,6 +51,7 @@ library
     text               >= 1.2.4.0   && < 1.3,
     time               >= 1.9.3     && < 1.10,
     transformers       >= 0.5.6.2   && < 0.6,
+    unliftio-core      >= 0.1.2.0   && < 0.2,
     uuid               >= 1.3.13    && < 1.4
   hs-source-dirs: src
   default-language: Haskell2010
