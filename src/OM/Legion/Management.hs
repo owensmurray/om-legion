@@ -49,7 +49,7 @@ data Cluster = Cluster {
       cPlan :: [Action],
        cOrd :: RebalanceOrdinal
   }
-  deriving (Show, Generic)
+  deriving stock (Show, Generic)
 instance ToJSON Cluster
 instance Binary Cluster
 instance Default Cluster where
@@ -68,7 +68,7 @@ data TopologyEvent
   = CommissionComplete Peer
   | UpdateClusterGoal ClusterGoal
   | Terminated Peer
-  deriving (Eq, Show, Generic)
+  deriving stock (Eq, Show, Generic)
 instance Binary TopologyEvent
 instance ToJSON TopologyEvent
 instance Event TopologyEvent where
@@ -172,7 +172,7 @@ newtype Peer = Peer {
 data Action
   = Decommission Peer
   | Commission Peer
-  deriving (Show, Generic)
+  deriving stock (Show, Generic)
 instance ToJSON Action
 instance Binary Action
 

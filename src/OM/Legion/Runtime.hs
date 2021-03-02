@@ -349,7 +349,7 @@ data RuntimeMessage e
   | SendCallResponse Peer MessageId ByteString
   | HandleCallResponse Peer MessageId ByteString
   | Resend (Responder ())
-deriving instance
+deriving stock instance
     ( Show e
     , Show (Output e)
     , Show (State e)
@@ -370,8 +370,8 @@ data PeerMessage e
     {- ^ Send a user cast message from one peer to another. -}
   | PMCallResponse Peer MessageId ByteString
     {- ^ Send a response to a user call message. -}
-  deriving (Generic)
-deriving instance
+  deriving stock (Generic)
+deriving stock instance
     ( Show e
     , Show (Output e)
     , Show (State e)
@@ -1160,7 +1160,7 @@ data StartupMode e
       Peer {- ^ The Peer being recovered. -}
       (EventFold ClusterName Peer (ClusterEvent e))
       {- ^ The last acknowledged state we had before we crashed. -}
-deriving instance
+deriving stock instance
     ( Show e
     , Show (Output e)
     , Show (State e)
@@ -1252,20 +1252,20 @@ makeRuntimeState
 
 {- | This is the type of a join request message. -}
 newtype JoinRequest = JoinRequest Peer
-  deriving (Generic, Show)
+  deriving stock (Generic, Show)
 instance Binary JoinRequest
 
 
 {- | The response to a JoinRequest message -}
 newtype JoinResponse e
   = JoinOk (EventFold ClusterName Peer (ClusterEvent e))
-  deriving (Generic)
-deriving instance (Constraints e) => Show (JoinResponse e)
+  deriving stock (Generic)
+deriving stock instance (Constraints e) => Show (JoinResponse e)
 instance (Constraints e) => Binary (JoinResponse e)
 
 
 {- | Message Identifier. -}
-data MessageId = M UUID Word64 deriving (Generic, Show, Eq, Ord)
+data MessageId = M UUID Word64 deriving stock (Generic, Show, Eq, Ord)
 instance Binary MessageId
 
 
