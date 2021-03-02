@@ -45,29 +45,29 @@ module OM.Legion.Runtime (
 
 
 import Control.Arrow ((&&&))
-import Control.Concurrent (Chan, newChan, readChan, threadDelay, writeChan)
-import Control.Concurrent.Async (Async, async, race_)
-import Control.Concurrent.STM (TVar, atomically, newTVar, readTVar, retry, writeTVar)
+import Control.Concurrent (Chan, newChan, readChan, threadDelay,
+  writeChan)
+import Control.Concurrent.Async (async, race_)
+import Control.Concurrent.STM (TVar, atomically, newTVar, readTVar,
+  retry, writeTVar)
 import Control.Exception.Safe (MonadCatch, finally, tryAny)
 import Control.Monad (join, mzero, void, when)
-import Control.Monad.IO.Class (MonadIO, liftIO)
+import Control.Monad.IO.Class (MonadIO(liftIO))
+import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Identity (runIdentity)
-import Control.Monad.Logger
-  ( LogStr, LoggingT, MonadLogger, MonadLoggerIO, askLoggerIO, logDebug, logError, logInfo, logWarn
-  , runLoggingT
-  )
-import Control.Monad.State (MonadState, StateT, evalStateT, get, gets, modify, put, runStateT)
+import Control.Monad.Logger (LogStr, LoggingT, MonadLogger, MonadLoggerIO,
+  askLoggerIO, logDebug, logError, logInfo, logWarn, runLoggingT)
+import Control.Monad.State (MonadState, StateT, evalStateT, get, gets,
+  modify, put, runStateT)
 import Control.Monad.Trans.Class (lift)
 import Data.Aeson (FromJSON, ToJSON)
 import Data.Binary (Binary, Word64)
 import Data.ByteString.Lazy (ByteString)
-import Data.CRDT.EventFold
-  ( Event(Output, State), UpdateResult(urEventFold, urOutputs), Diff, EventFold, EventId, divergent
-  , events, infimumId, infimumValue, origin, projParticipants
-  )
-import Data.CRDT.EventFold.Monad
-  ( MonadUpdateEF(diffMerge, disassociate, event, fullMerge, participate), EventFoldT, runEventFoldT
-  )
+import Data.CRDT.EventFold (Event(Output, State),
+  UpdateResult(urEventFold, urOutputs), Diff, EventFold, EventId,
+  divergent, events, infimumId, infimumValue, origin, projParticipants)
+import Data.CRDT.EventFold.Monad (MonadUpdateEF(diffMerge, disassociate,
+  event, fullMerge, participate), EventFoldT, runEventFoldT)
 import Data.Conduit ((.|), ConduitT, awaitForever, runConduit, yield)
 import Data.Default.Class (Default)
 import Data.Int (Int64)
@@ -76,32 +76,29 @@ import Data.Proxy (Proxy(Proxy))
 import Data.Set ((\\), Set)
 import Data.String (IsString, fromString)
 import Data.Text (Text)
-import Data.Time (DiffTime, UTCTime, addUTCTime, diffUTCTime, getCurrentTime, utctDayTime)
+import Data.Time (DiffTime, UTCTime, addUTCTime, diffUTCTime,
+  getCurrentTime, utctDayTime)
 import Data.UUID (UUID)
 import Data.UUID.V1 (nextUUID)
 import Data.Void (Void)
 import GHC.Generics (Generic)
 import Network.Socket (PortNumber)
 import Numeric.Natural (Natural)
-import OM.Fork (Actor, Background, Msg, Responder, actorChan)
+import OM.Fork (Actor, Msg, Race, Responder, actorChan, race)
 import OM.Legion.Conduit (chanToSink)
-import OM.Legion.Management
-  ( Action(Commission, Decommission), Peer(Peer)
-  , TopologyEvent(CommissionComplete, Terminated, UpdateClusterGoal), ClusterEvent, ClusterGoal
-  , RebalanceOrdinal, TopologySensitive, allowDecommission, cOrd, cPlan, cgNumNodes, topEvent
-  , unPeerOrdinal, userEvent
-  )
+import OM.Legion.Management (Action(Commission, Decommission), Peer(Peer),
+  TopologyEvent(CommissionComplete, Terminated, UpdateClusterGoal),
+  ClusterEvent, ClusterGoal, RebalanceOrdinal, TopologySensitive,
+  allowDecommission, cOrd, cPlan, cgNumNodes, topEvent, unPeerOrdinal,
+  userEvent)
 import OM.Logging (withPrefix)
 import OM.Show (showt)
-import OM.Socket
-  ( AddressDescription(AddressDescription), Endpoint(Endpoint), connectServer, openEgress
-  , openIngress, openServer
-  )
+import OM.Socket (AddressDescription(AddressDescription),
+  Endpoint(Endpoint), connectServer, openEgress, openIngress, openServer)
 import System.Clock (TimeSpec)
 import System.Random.Shuffle (shuffleM)
-import Text.Megaparsec
-  ( MonadParsec, Parsec, Token, anySingle, eof, lookAhead, manyTill, parseMaybe, satisfy
-  )
+import Text.Megaparsec (MonadParsec, Parsec, Token, anySingle, eof,
+  lookAhead, manyTill, parseMaybe, satisfy)
 import Web.HttpApiData (FromHttpApiData, ToHttpApiData)
 import qualified Data.CRDT.EventFold as EF
 import qualified Data.Map as Map
@@ -111,9 +108,7 @@ import qualified OM.Fork as Fork
 import qualified System.Clock as Clock
 import qualified Text.Megaparsec as M
 
-
 {-# ANN module ("HLint: ignore Redundant <$>" :: String) #-}
-
 
 {- | The Legionary runtime state. -}
 data RuntimeState e = RuntimeState {
@@ -159,18 +154,20 @@ data RuntimeState e = RuntimeState {
 
 {- | Fork the Legion runtime system. -}
 forkLegionary
-  :: ( Default (State e)
-     , Event e
-     , Show e
-     , Show (State e)
-     , Show (Output e)
-     , Eq e
-     , Eq (Output e)
+  :: ( Binary (Output e)
      , Binary (State e)
      , Binary e
-     , Binary (Output e)
-     , TopologySensitive e
+     , Default (State e)
+     , Eq (Output e)
+     , Eq e
+     , Event e
      , MonadLoggerIO m
+     , MonadUnliftIO m
+     , Race
+     , Show (Output e)
+     , Show (State e)
+     , Show e
+     , TopologySensitive e
      )
   => IO ClusterGoal
      {- ^ How to get the cluster goal from the connonical source. -}
@@ -198,20 +195,21 @@ forkLegionary
     rts <- makeRuntimeState notify startupMode launch terminate
     runtimeChan <- RChan <$> liftIO newChan
     logging <- withPrefix (logPrefix (rsSelf rts)) <$> askLoggerIO
-    asyncHandle <- liftIO . async . (`runLoggingT` logging) $
-      executeRuntime
-        getClusterGoal
-        handleUserCall
-        handleUserCast
-        rts
-        runtimeChan
+    race 
+      . liftIO
+      . (`runLoggingT` logging)
+      $ executeRuntime
+          getClusterGoal
+          handleUserCall
+          handleUserCast
+          rts
+          runtimeChan
     let
       clusterId :: ClusterName
       clusterId = EF.origin (rsClusterState rts)
     return Runtime {
              rChan = runtimeChan,
              rSelf = rsSelf rts,
-            rAsync = asyncHandle,
         rClusterId = clusterId
       }
   where
@@ -223,7 +221,6 @@ forkLegionary
 data Runtime e = Runtime {
          rChan :: RChan e,
          rSelf :: Peer,
-        rAsync :: Async Void,
     rClusterId :: ClusterName
   }
 instance Actor (Runtime e) where
@@ -324,15 +321,6 @@ getSelf :: Runtime e -> Peer
 getSelf = rSelf
 
 
-{- |
-  Get the async handle on the background legion thread, in case you want
-  to wait for it to complete (which should never happen except in the
-  case of an error).
--}
-instance Background (Runtime e) where
-  getAsync = rAsync
-
-
 {- | The types of messages that can be sent to the runtime. -}
 data RuntimeMessage e
   = ApplyFast e (Responder (Output e))
@@ -353,7 +341,7 @@ data RuntimeMessage e
   | SendCallResponse Peer MessageId ByteString
   | HandleCallResponse Peer MessageId ByteString
   | Resend (Responder ())
-deriving instance
+deriving stock instance
     ( Show e
     , Show (Output e)
     , Show (State e)
@@ -374,8 +362,8 @@ data PeerMessage e
     {- ^ Send a user cast message from one peer to another. -}
   | PMCallResponse Peer MessageId ByteString
     {- ^ Send a response to a user call message. -}
-  deriving (Generic)
-deriving instance
+  deriving stock (Generic)
+deriving stock instance
     ( Show e
     , Show (Output e)
     , Show (State e)
@@ -1164,7 +1152,7 @@ data StartupMode e
       Peer {- ^ The Peer being recovered. -}
       (EventFold ClusterName Peer (ClusterEvent e))
       {- ^ The last acknowledged state we had before we crashed. -}
-deriving instance
+deriving stock instance
     ( Show e
     , Show (Output e)
     , Show (State e)
@@ -1196,7 +1184,6 @@ makeRuntimeState
             void $ event (topEvent (UpdateClusterGoal goal))
             void $ event (topEvent (CommissionComplete self))
           )
-        
     in
       makeRuntimeState
         notify
@@ -1257,20 +1244,20 @@ makeRuntimeState
 
 {- | This is the type of a join request message. -}
 newtype JoinRequest = JoinRequest Peer
-  deriving (Generic, Show)
+  deriving stock (Generic, Show)
 instance Binary JoinRequest
 
 
 {- | The response to a JoinRequest message -}
 newtype JoinResponse e
   = JoinOk (EventFold ClusterName Peer (ClusterEvent e))
-  deriving (Generic)
-deriving instance (Constraints e) => Show (JoinResponse e)
+  deriving stock (Generic)
+deriving stock instance (Constraints e) => Show (JoinResponse e)
 instance (Constraints e) => Binary (JoinResponse e)
 
 
 {- | Message Identifier. -}
-data MessageId = M UUID Word64 deriving (Generic, Show, Eq, Ord)
+data MessageId = M UUID Word64 deriving stock (Generic, Show, Eq, Ord)
 instance Binary MessageId
 
 
