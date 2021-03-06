@@ -161,6 +161,7 @@ forkLegionary
      , Eq (Output e)
      , Eq e
      , Event e
+     , MonadCatch m
      , MonadLoggerIO m
      , MonadUnliftIO m
      , Race
@@ -195,7 +196,7 @@ forkLegionary
     rts <- makeRuntimeState notify startupMode launch terminate
     runtimeChan <- RChan <$> liftIO newChan
     logging <- withPrefix (logPrefix (rsSelf rts)) <$> askLoggerIO
-    race 
+    race "legion runtime"
       . liftIO
       . (`runLoggingT` logging)
       $ executeRuntime
