@@ -94,7 +94,8 @@ import OM.Legion.Management (Action(Commission, Decommission), Peer(Peer),
 import OM.Logging (withPrefix)
 import OM.Show (showt)
 import OM.Socket (AddressDescription(AddressDescription),
-  Endpoint(Endpoint), connectServer, openEgress, openIngress, openServer)
+  Endpoint(Endpoint), openEgress, openIngress)
+import OM.Socket.Server (connectServer, openServer)
 import System.Clock (TimeSpec)
 import System.Random.Shuffle (shuffleM)
 import Text.Megaparsec (MonadParsec, Parsec, Token, anySingle, eof,
@@ -107,6 +108,7 @@ import qualified Data.Text as T
 import qualified OM.Fork as Fork
 import qualified System.Clock as Clock
 import qualified Text.Megaparsec as M
+import qualified OM.Socket.Server as Server
 
 {-# ANN module ("HLint: ignore Redundant <$>" :: String) #-}
 
@@ -585,16 +587,17 @@ executeRuntime
     runJoinListener :: (MonadLoggerIO m, MonadFail m) => m ()
     runJoinListener =
       let
-        addy :: AddressDescription
+        addy :: Server.AddressDescription
         addy =
-          AddressDescription
+          Server.AddressDescription
             (
               legionPeer (origin (rsClusterState rts)) (rsSelf rts)
               <> ":" <> showt joinMessagePort
             )
       in
         runConduit (
-          openServer (Endpoint addy Nothing)
+          pure ()
+          .| openServer (Server.Endpoint addy Nothing)
           .| awaitForever (\(req, respond_) -> lift $
                Fork.call runtimeChan (Join req) >>= respond_
              )
@@ -1210,9 +1213,9 @@ makeRuntimeState
     requestJoin :: (Constraints e, MonadLoggerIO m)
       => JoinRequest
       -> m (JoinResponse e)
-    requestJoin joinMsg = ($ joinMsg) =<< connectServer addr
+    requestJoin joinMsg = ($ joinMsg) =<< connectServer addr Nothing
 
-    addr :: AddressDescription
+    addr :: Server.AddressDescription
     addr =
       legionPeer clusterName targetPeer
       <> ":" <> showt joinMessagePort
