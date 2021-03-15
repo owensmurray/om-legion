@@ -66,7 +66,7 @@ import Data.ByteString.Lazy (ByteString)
 import Data.CRDT.EventFold (Event(Output, State),
   UpdateResult(urEventFold, urOutputs), Diff, EventFold, EventId,
   divergent, events, infimumId, infimumParticipants, infimumValue,
-  origin, projParticipants)
+  origin, projParticipants, projectedValue)
 import Data.CRDT.EventFold.Monad (MonadUpdateEF(diffMerge, disassociate,
   event, fullMerge, participate), EventFoldT, runEventFoldT)
 import Data.Conduit ((.|), ConduitT, awaitForever, runConduit, yield)
@@ -90,8 +90,8 @@ import OM.Legion.Conduit (chanToSink)
 import OM.Legion.Management (Action(Commission, Decommission), Peer(Peer),
   TopologyEvent(CommissionComplete, Terminated, UpdateClusterGoal),
   ClusterEvent, ClusterGoal, RebalanceOrdinal, TopologySensitive,
-  allowDecommission, cOrd, cPlan, cgNumNodes, topEvent, unPeerOrdinal,
-  userEvent)
+  allowDecommission, cGoal, cOrd, cPlan, cgNumNodes, topEvent,
+  unPeerOrdinal, userEvent)
 import OM.Logging (withPrefix)
 import OM.Show (showt)
 import OM.Socket (AddressDescription(AddressDescription),
@@ -502,9 +502,15 @@ executeRuntime
               <> "resize the cluser: " <> showt err
             liftIO (threadDelay 5_000_000)
             clusterResizeLoop
-          Right goal -> do
-            Fork.cast runtimeChan . ManagementEvent . UpdateClusterGoal $ goal
-            sleepUntilTime goal
+          Right newGoal -> do
+            oldGoal <-
+              cGoal . fst . projectedValue <$> Fork.call runtimeChan ReadState
+            when (oldGoal /= newGoal) $
+              Fork.cast runtimeChan
+                . ManagementEvent
+                . UpdateClusterGoal
+                $ newGoal
+            sleepUntilTime newGoal
             clusterResizeLoop
       where
         sleepUntilTime :: (MonadLoggerIO m) => ClusterGoal -> m ()

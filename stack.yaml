@@ -3,13 +3,11 @@ extra-package-dbs: []
 packages:
   - .
 extra-deps:
-  - ki-0.2.0.1
-  - http://localhost:4563/package/load-balancing-1.0.2.0.tar.gz
-  - http://localhost:4563/package/om-discovery-client-0.1.2.1.tar.gz
   - http://localhost:4563/package/crdt-event-fold-1.5.0.0.tar.gz
   - http://localhost:4563/package/om-fork-0.7.1.0.tar.gz
   - http://localhost:4563/package/om-logging-0.4.0.2.tar.gz
   - http://localhost:4563/package/om-show-0.1.1.1.tar.gz
   - http://localhost:4563/package/om-socket-0.9.0.0.tar.gz
   - http://localhost:4563/package/om-socket-server-0.1.0.0.tar.gz
+  - ki-0.2.0.1
 resolver: lts-16.26
