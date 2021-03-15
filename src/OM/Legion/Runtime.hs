@@ -65,7 +65,8 @@ import Data.Binary (Binary, Word64)
 import Data.ByteString.Lazy (ByteString)
 import Data.CRDT.EventFold (Event(Output, State),
   UpdateResult(urEventFold, urOutputs), Diff, EventFold, EventId,
-  divergent, events, infimumId, infimumValue, origin, projParticipants)
+  divergent, events, infimumId, infimumParticipants, infimumValue,
+  origin, projParticipants, projectedValue)
 import Data.CRDT.EventFold.Monad (MonadUpdateEF(diffMerge, disassociate,
   event, fullMerge, participate), EventFoldT, runEventFoldT)
 import Data.Conduit ((.|), ConduitT, awaitForever, runConduit, yield)
@@ -73,7 +74,7 @@ import Data.Default.Class (Default)
 import Data.Int (Int64)
 import Data.Map (Map)
 import Data.Proxy (Proxy(Proxy))
-import Data.Set ((\\), Set)
+import Data.Set ((\\), Set, member)
 import Data.String (IsString, fromString)
 import Data.Text (Text)
 import Data.Time (DiffTime, UTCTime, addUTCTime, diffUTCTime,
@@ -89,12 +90,13 @@ import OM.Legion.Conduit (chanToSink)
 import OM.Legion.Management (Action(Commission, Decommission), Peer(Peer),
   TopologyEvent(CommissionComplete, Terminated, UpdateClusterGoal),
   ClusterEvent, ClusterGoal, RebalanceOrdinal, TopologySensitive,
-  allowDecommission, cOrd, cPlan, cgNumNodes, topEvent, unPeerOrdinal,
-  userEvent)
+  allowDecommission, cGoal, cOrd, cPlan, cgNumNodes, topEvent,
+  unPeerOrdinal, userEvent)
 import OM.Logging (withPrefix)
 import OM.Show (showt)
 import OM.Socket (AddressDescription(AddressDescription),
-  Endpoint(Endpoint), connectServer, openEgress, openIngress, openServer)
+  Endpoint(Endpoint), openEgress, openIngress)
+import OM.Socket.Server (connectServer, openServer)
 import System.Clock (TimeSpec)
 import System.Random.Shuffle (shuffleM)
 import Text.Megaparsec (MonadParsec, Parsec, Token, anySingle, eof,
@@ -107,6 +109,7 @@ import qualified Data.Text as T
 import qualified OM.Fork as Fork
 import qualified System.Clock as Clock
 import qualified Text.Megaparsec as M
+import qualified OM.Socket.Server as Server
 
 {-# ANN module ("HLint: ignore Redundant <$>" :: String) #-}
 
@@ -499,9 +502,15 @@ executeRuntime
               <> "resize the cluser: " <> showt err
             liftIO (threadDelay 5_000_000)
             clusterResizeLoop
-          Right goal -> do
-            Fork.cast runtimeChan . ManagementEvent . UpdateClusterGoal $ goal
-            sleepUntilTime goal
+          Right newGoal -> do
+            oldGoal <-
+              cGoal . fst . projectedValue <$> Fork.call runtimeChan ReadState
+            when (oldGoal /= newGoal) $
+              Fork.cast runtimeChan
+                . ManagementEvent
+                . UpdateClusterGoal
+                $ newGoal
+            sleepUntilTime newGoal
             clusterResizeLoop
       where
         sleepUntilTime :: (MonadLoggerIO m) => ClusterGoal -> m ()
@@ -585,16 +594,17 @@ executeRuntime
     runJoinListener :: (MonadLoggerIO m, MonadFail m) => m ()
     runJoinListener =
       let
-        addy :: AddressDescription
+        addy :: Server.AddressDescription
         addy =
-          AddressDescription
+          Server.AddressDescription
             (
               legionPeer (origin (rsClusterState rts)) (rsSelf rts)
               <> ":" <> showt joinMessagePort
             )
       in
         runConduit (
-          openServer (Endpoint addy Nothing)
+          pure ()
+          .| openServer (Server.Endpoint addy Nothing)
           .| awaitForever (\(req, respond_) -> lift $
                Fork.call runtimeChan (Join req) >>= respond_
              )
@@ -689,19 +699,14 @@ handleRuntimeMessage (FullMerge other) =
 
 handleRuntimeMessage (Join (JoinRequest peer) responder) = do
   $(logInfo) $ "Handling join from peer: " <> showt peer
-  sid <- updateCluster (do
+  updateCluster (do
       void $ disassociate peer
       void $ event (topEvent (CommissionComplete peer))
-      participate peer
+      void $ participate peer
     )
   RuntimeState {rsClusterState} <- get
-  if sid <= infimumId rsClusterState
-    then do
-      $(logInfo) $ "Join immediately with: " <> showt rsClusterState
-      respond responder (JoinOk rsClusterState)
-    else do
-      $(logInfo) $ "Join delayed (" <> showt sid <> ")."
-      modify (\s -> s {rsJoins = Map.insert sid responder (rsJoins s)})
+  $(logInfo) $ "Join immediately with: " <> showt rsClusterState
+  respond responder (JoinOk rsClusterState)
 
 handleRuntimeMessage (ReadState responder) =
   respond responder . rsClusterState =<< get
@@ -951,7 +956,15 @@ propagate = do
             <> "made on the cluster state."
           sendPeer (PMFullMerge cluster) target
           modify (\rs -> rs {rsCheckpointTime = now})
-        else sendPeer (PMMerge (events target cluster)) target
+        else 
+          if target `member` infimumParticipants cluster
+            then
+              sendPeer (PMMerge (events target cluster)) target
+            else do
+              $(logInfo)
+                $ "Sending full merge because the target's join event "
+                <> "has not reaached the infimum"
+              sendPeer (PMFullMerge cluster) target
     modify (\rs -> rs {
         rsCheckpointSid = infimumId cluster,
         rsCheckpointTime =
@@ -1210,9 +1223,9 @@ makeRuntimeState
     requestJoin :: (Constraints e, MonadLoggerIO m)
       => JoinRequest
       -> m (JoinResponse e)
-    requestJoin joinMsg = ($ joinMsg) =<< connectServer addr
+    requestJoin joinMsg = ($ joinMsg) =<< connectServer addr Nothing
 
-    addr :: AddressDescription
+    addr :: Server.AddressDescription
     addr =
       legionPeer clusterName targetPeer
       <> ":" <> showt joinMessagePort

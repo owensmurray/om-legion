@@ -2,7 +2,7 @@
 -- documentation, see http://haskell.org/cabal/users-guide/
 
 name:                om-legion
-version:             6.4.0.0
+version:             6.4.0.1
 synopsis:            Core Legion Framework.
 -- description:         
 homepage:            https://github.com/owensmurray/om-legion
@@ -34,7 +34,7 @@ library
     clock              >= 0.8       && < 0.9,
     conduit            >= 1.3.4     && < 1.4,
     containers         >= 0.6.2.1   && < 0.7,
-    crdt-event-fold    >= 1.4.0.0   && < 1.5,
+    crdt-event-fold    >= 1.5.0.0   && < 1.6,
     data-default-class >= 0.1.2.0   && < 0.2,
     http-api-data      >= 0.4.1.1   && < 0.5,
     megaparsec         >= 8.0.0     && < 8.1,
@@ -44,7 +44,8 @@ library
     om-fork            >= 0.7.0.0   && < 0.8,
     om-logging         >= 0.4.0.2   && < 0.5,
     om-show            >= 0.1.1.1   && < 0.2,
-    om-socket          >= 0.8.0.0   && < 0.9,
+    om-socket          >= 0.9.0.0   && < 0.10,
+    om-socket-server   >= 0.1.0.0   && < 0.2,
     random-shuffle     >= 0.0.4     && < 0.1,
     safe-exceptions    >= 0.1.7.1   && < 0.2,
     stm                >= 2.5.0.0   && < 2.6,
