@@ -47,7 +47,7 @@ module OM.Legion.Runtime (
 import Control.Arrow ((&&&))
 import Control.Concurrent (Chan, newChan, readChan, threadDelay,
   writeChan)
-import Control.Concurrent.Async (async, race_)
+import Control.Concurrent.Async (async)
 import Control.Concurrent.STM (TVar, atomically, newTVar, readTVar,
   retry, writeTVar)
 import Control.Exception.Safe (MonadCatch, finally, tryAny)
@@ -55,8 +55,9 @@ import Control.Monad (join, mzero, void, when)
 import Control.Monad.IO.Class (MonadIO(liftIO))
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Identity (runIdentity)
-import Control.Monad.Logger (LogStr, LoggingT, MonadLogger, MonadLoggerIO,
-  askLoggerIO, logDebug, logError, logInfo, logWarn, runLoggingT)
+import Control.Monad.Logger (LoggingT(runLoggingT),
+  MonadLoggerIO(askLoggerIO), LogStr, MonadLogger, logDebug, logError,
+  logInfo, logWarn)
 import Control.Monad.State (MonadState, StateT, evalStateT, get, gets,
   modify, put, runStateT)
 import Control.Monad.Trans.Class (lift)
@@ -85,7 +86,7 @@ import Data.Void (Void)
 import GHC.Generics (Generic)
 import Network.Socket (PortNumber)
 import Numeric.Natural (Natural)
-import OM.Fork (Actor, Msg, Race, Responder, actorChan, race)
+import OM.Fork (Actor(Msg, actorChan), Race, Responder, race)
 import OM.Legion.Conduit (chanToSink)
 import OM.Legion.Management (Action(Commission, Decommission), Peer(Peer),
   TopologyEvent(CommissionComplete, Terminated, UpdateClusterGoal),
@@ -165,6 +166,7 @@ forkLegionary
      , Eq e
      , Event e
      , MonadCatch m
+     , MonadFail m
      , MonadLoggerIO m
      , MonadUnliftIO m
      , Race
@@ -199,15 +201,13 @@ forkLegionary
     rts <- makeRuntimeState notify startupMode launch terminate
     runtimeChan <- RChan <$> liftIO newChan
     logging <- withPrefix (logPrefix (rsSelf rts)) <$> askLoggerIO
-    race "legion runtime"
-      . liftIO
-      . (`runLoggingT` logging)
-      $ executeRuntime
-          getClusterGoal
-          handleUserCall
-          handleUserCast
-          rts
-          runtimeChan
+    (`runLoggingT` logging) $
+      executeRuntime
+        getClusterGoal
+        handleUserCall
+        handleUserCast
+        rts
+        runtimeChan
     let
       clusterId :: ClusterName
       clusterId = EF.origin (rsClusterState rts)
@@ -450,8 +450,11 @@ executeRuntime
      , Eq (Output e)
      , Eq e
      , Event e
+     , MonadCatch m
      , MonadFail m
      , MonadLoggerIO m
+     , MonadUnliftIO m
+     , Race
      , Show (Output e)
      , Show (State e)
      , Show e
@@ -465,7 +468,7 @@ executeRuntime
   -> RuntimeState e
   -> RChan e
     {- ^ A source of requests, together with a way to respond to the requets. -}
-  -> m Void
+  -> m ()
 executeRuntime
     getClusterGoal
     handleUserCall
@@ -474,31 +477,31 @@ executeRuntime
     runtimeChan
   = do
     {- Start the various messages sources. -}
-    runPeerListener
-      `raceLog_` runJoinListener
-      `raceLog_` runPeriodicResent
-      `raceLog_` clusterResizeLoop
-      `raceLog_`
-        (`evalStateT` rts)
-          (
-            let
-              -- handleMessages :: StateT (RuntimeState e3) m Void
-              handleMessages = do
-                msg <- liftIO $ readChan (unRChan runtimeChan)
-                RuntimeState {rsClusterState = cluster1} <- get
-                $(logDebug) $ "Handling: " <> showt msg
-                handleRuntimeMessage msg
-                RuntimeState {rsClusterState = cluster2} <- get
-                when (cluster1 /= cluster2) $ do
-                  $(logDebug) $ "New Cluster State: " <> showt cluster2
-                  propagate
-                handleBroadcallTimeouts
-                handleOutstandingJoins
-                handleMessages
-            in
+    race "om-legion peer listener" runPeerListener
+    race "om-legion join listener" runJoinListener
+    race "om-legion periodic resend" runPeriodicResent
+    race "om-legion cluster resize loop" clusterResizeLoop
+    race "om-legion message handler" $
+      (`evalStateT` rts)
+        (
+          let
+            -- handleMessages :: StateT (RuntimeState e3) m Void
+            handleMessages = do
+              msg <- liftIO $ readChan (unRChan runtimeChan)
+              RuntimeState {rsClusterState = cluster1} <- get
+              $(logDebug) $ "Handling: " <> showt msg
+              handleRuntimeMessage msg
+              RuntimeState {rsClusterState = cluster2} <- get
+              when (cluster1 /= cluster2) $ do
+                $(logDebug) $ "New Cluster State: " <> showt cluster2
+                propagate
+              handleBroadcallTimeouts
+              handleOutstandingJoins
               handleMessages
-          )
-    fail "Legion runtime stopped."
+          in do
+            liftIO $ rsNotify rts (rsClusterState rts)
+            handleMessages
+        )
   where
     clusterResizeLoop :: (MonadCatch m, MonadLoggerIO m) => m Void
     clusterResizeLoop =
@@ -560,12 +563,6 @@ executeRuntime
 
           liftIO (threadDelay sleepTime)
 
-
-    {- | Like 'race_', but with logging. -}
-    raceLog_ :: (MonadLoggerIO m) => LoggingT IO a -> LoggingT IO b -> m ()
-    raceLog_ a b = do
-      logging <- askLoggerIO
-      liftIO $ race_ (runLoggingT a logging) (runLoggingT b logging)
 
     runPeerListener :: (MonadLoggerIO m, MonadFail m) => m ()
     runPeerListener =
