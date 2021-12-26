@@ -22,6 +22,7 @@
 module OM.Legion.Runtime (
   -- * Starting the framework runtime.
   forkLegionary,
+  forkLegionary2,
   Runtime,
   StartupMode(..),
 
@@ -47,7 +48,7 @@ module OM.Legion.Runtime (
 import Control.Arrow ((&&&))
 import Control.Concurrent (Chan, newChan, readChan, threadDelay,
   writeChan)
-import Control.Concurrent.Async (async, race_)
+import Control.Concurrent.Async (async)
 import Control.Concurrent.STM (TVar, atomically, newTVar, readTVar,
   retry, writeTVar)
 import Control.Exception.Safe (MonadCatch, finally, tryAny)
@@ -55,8 +56,9 @@ import Control.Monad (join, mzero, void, when)
 import Control.Monad.IO.Class (MonadIO(liftIO))
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Identity (runIdentity)
-import Control.Monad.Logger (LogStr, LoggingT, MonadLogger, MonadLoggerIO,
-  askLoggerIO, logDebug, logError, logInfo, logWarn, runLoggingT)
+import Control.Monad.Logger (LoggingT(runLoggingT),
+  MonadLoggerIO(askLoggerIO), LogStr, MonadLogger, logDebug, logError,
+  logInfo, logWarn)
 import Control.Monad.State (MonadState, StateT, evalStateT, get, gets,
   modify, put, runStateT)
 import Control.Monad.Trans.Class (lift)
@@ -85,7 +87,7 @@ import Data.Void (Void)
 import GHC.Generics (Generic)
 import Network.Socket (PortNumber)
 import Numeric.Natural (Natural)
-import OM.Fork (Actor, Msg, Race, Responder, actorChan, race)
+import OM.Fork (Actor(Msg, actorChan), Race, Responder, race)
 import OM.Legion.Conduit (chanToSink)
 import OM.Legion.Management (Action(Commission, Decommission), Peer(Peer),
   TopologyEvent(CommissionComplete, Terminated, UpdateClusterGoal),
@@ -107,9 +109,9 @@ import qualified Data.Map as Map
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified OM.Fork as Fork
+import qualified OM.Socket.Server as Server
 import qualified System.Clock as Clock
 import qualified Text.Megaparsec as M
-import qualified OM.Socket.Server as Server
 
 {-# ANN module ("HLint: ignore Redundant <$>" :: String) #-}
 
@@ -151,7 +153,9 @@ data RuntimeState e = RuntimeState {
            rsLastOrd :: RebalanceOrdinal,
                         {- ^ The last attempted rebalancing step. -}
             rsLaunch :: Peer -> IO (), {- ^ How to launch a new peer. -}
-         rsTerminate :: forall void. IO void {- ^ How to terminate ourself. -}
+         rsTerminate :: forall void. IO void, {- ^ How to terminate ourself. -}
+       rsConnFactory :: ConnectionFactory e
+                        {- ^ How to create connections to peers. -}
   }
 
 
@@ -165,6 +169,7 @@ forkLegionary
      , Eq e
      , Event e
      , MonadCatch m
+     , MonadFail m
      , MonadLoggerIO m
      , MonadUnliftIO m
      , Race
@@ -187,7 +192,49 @@ forkLegionary
        existing cluster.
      -}
   -> m (Runtime e)
-forkLegionary
+forkLegionary = forkLegionary2 defaultConnFactory
+
+
+{- |
+  Like 'forkLegionary', but provide a way to override the peer
+  communication mechanism, e.g. for testing.
+-}
+forkLegionary2
+  :: ( Binary (Output e)
+     , Binary (State e)
+     , Binary e
+     , Default (State e)
+     , Eq (Output e)
+     , Eq e
+     , Event e
+     , MonadCatch m
+     , MonadFail m
+     , MonadLoggerIO m
+     , MonadUnliftIO m
+     , Race
+     , Show (Output e)
+     , Show (State e)
+     , Show e
+     , TopologySensitive e
+     )
+  => ConnectionFactory e
+     {- ^ How to create a connection to a peer.  -}
+  -> IO ClusterGoal
+     {- ^ How to get the cluster goal from the connonical source. -}
+  -> (Peer -> IO ()) {- ^ How to launch a new peer. -}
+  -> (forall void. IO void) {- ^ How to terminate ourself. -}
+  -> (ByteString -> IO ByteString) {- ^ Handle a user call request. -}
+  -> (ByteString -> IO ()) {- ^ Handle a user cast message. -}
+  -> (Peer -> EventFold ClusterName Peer (ClusterEvent e) -> IO ())
+     {- ^ Callback when the cluster-wide powerstate changes. -}
+  -> StartupMode e
+     {- ^
+       How to start the runtime, by creating new cluster or joining an
+       existing cluster.
+     -}
+  -> m (Runtime e)
+forkLegionary2
+    connFactory
     getClusterGoal
     launch
     terminate
@@ -196,18 +243,16 @@ forkLegionary
     notify
     startupMode
   = do
-    rts <- makeRuntimeState notify startupMode launch terminate
+    rts <- makeRuntimeState connFactory notify startupMode launch terminate
     runtimeChan <- RChan <$> liftIO newChan
     logging <- withPrefix (logPrefix (rsSelf rts)) <$> askLoggerIO
-    race "legion runtime"
-      . liftIO
-      . (`runLoggingT` logging)
-      $ executeRuntime
-          getClusterGoal
-          handleUserCall
-          handleUserCast
-          rts
-          runtimeChan
+    (`runLoggingT` logging) $
+      executeRuntime
+        getClusterGoal
+        handleUserCall
+        handleUserCast
+        rts
+        runtimeChan
     let
       clusterId :: ClusterName
       clusterId = EF.origin (rsClusterState rts)
@@ -437,19 +482,29 @@ parseLegionPeer =
     parseMaybe parser
 
 
-
-
 {- |
   Execute the Legion runtime, with the given user definitions, and
   framework settings. This function never returns (except maybe with an
   exception if something goes horribly wrong).
 -}
 executeRuntime
-  :: ( Constraints e
+  :: ( Binary (Output e)
+     , Binary (State e)
+     , Binary e
+     , Default (State e)
+     , Eq (Output e)
+     , Eq e
+     , Event e
      , MonadCatch m
-     , MonadLoggerIO m
      , MonadFail m
-    )
+     , MonadLoggerIO m
+     , MonadUnliftIO m
+     , Race
+     , Show (Output e)
+     , Show (State e)
+     , Show e
+     , TopologySensitive e
+     )
   => IO ClusterGoal
   -> (ByteString -> IO ByteString)
      {- ^ Handle a user call request.  -}
@@ -458,7 +513,7 @@ executeRuntime
   -> RuntimeState e
   -> RChan e
     {- ^ A source of requests, together with a way to respond to the requets. -}
-  -> m Void
+  -> m ()
 executeRuntime
     getClusterGoal
     handleUserCall
@@ -467,31 +522,31 @@ executeRuntime
     runtimeChan
   = do
     {- Start the various messages sources. -}
-    runPeerListener
-      `raceLog_` runJoinListener
-      `raceLog_` runPeriodicResent
-      `raceLog_` clusterResizeLoop
-      `raceLog_`
-        (`evalStateT` rts)
-          (
-            let
-              -- handleMessages :: StateT (RuntimeState e3) m Void
-              handleMessages = do
-                msg <- liftIO $ readChan (unRChan runtimeChan)
-                RuntimeState {rsClusterState = cluster1} <- get
-                $(logDebug) $ "Handling: " <> showt msg
-                handleRuntimeMessage msg
-                RuntimeState {rsClusterState = cluster2} <- get
-                when (cluster1 /= cluster2) $ do
-                  $(logDebug) $ "New Cluster State: " <> showt cluster2
-                  propagate
-                handleBroadcallTimeouts
-                handleOutstandingJoins
-                handleMessages
-            in
+    race "om-legion peer listener" runPeerListener
+    race "om-legion join listener" runJoinListener
+    race "om-legion periodic resend" runPeriodicResent
+    race "om-legion cluster resize loop" clusterResizeLoop
+    race "om-legion message handler" $
+      (`evalStateT` rts)
+        (
+          let
+            -- handleMessages :: StateT (RuntimeState e3) m Void
+            handleMessages = do
+              msg <- liftIO $ readChan (unRChan runtimeChan)
+              RuntimeState {rsClusterState = cluster1} <- get
+              $(logDebug) $ "Handling: " <> showt msg
+              handleRuntimeMessage msg
+              RuntimeState {rsClusterState = cluster2} <- get
+              when (cluster1 /= cluster2) $ do
+                $(logDebug) $ "New Cluster State: " <> showt cluster2
+                propagate
+              handleBroadcallTimeouts
+              handleOutstandingJoins
               handleMessages
-          )
-    fail "Legion runtime stopped."
+          in do
+            liftIO $ rsNotify rts (rsClusterState rts)
+            handleMessages
+        )
   where
     clusterResizeLoop :: (MonadCatch m, MonadLoggerIO m) => m Void
     clusterResizeLoop =
@@ -553,12 +608,6 @@ executeRuntime
 
           liftIO (threadDelay sleepTime)
 
-
-    {- | Like 'race_', but with logging. -}
-    raceLog_ :: (MonadLoggerIO m) => LoggingT IO a -> LoggingT IO b -> m ()
-    raceLog_ a b = do
-      logging <- askLoggerIO
-      liftIO $ race_ (runLoggingT a logging) (runLoggingT b logging)
 
     runPeerListener :: (MonadLoggerIO m, MonadFail m) => m ()
     runPeerListener =
@@ -1004,10 +1053,10 @@ sendPeer
   -> Peer
   -> m ()
 sendPeer msg peer = do
-  state@RuntimeState {rsConnections} <- get
+  state@RuntimeState {rsConnections, rsConnFactory} <- get
   case Map.lookup peer rsConnections of
     Nothing -> do
-      conn <- createConnection peer
+      conn <- createConnection rsConnFactory peer
       put state {rsConnections = Map.insert peer conn rsConnections}
       sendPeer msg peer
     Just conn -> do
@@ -1020,6 +1069,21 @@ sendPeer msg peer = do
           put rs2
           $(logDebug) $ "Sent message to peer: " <> showt (peer, msg)
           return ()
+
+
+newtype ConnectionFactory e = ConnectionFactory {
+    createConnection ::
+      forall m w.
+      ( Constraints e
+      , MonadCatch m
+      , MonadIO w
+      , MonadLoggerIO m
+      , MonadState (RuntimeState e) m
+      , MonadState (RuntimeState e) w
+      )
+      => Peer
+      -> m (PeerMessage e -> w ())
+  }
 
 
 {- | Disconnect the connection to a peer. -}
@@ -1037,65 +1101,60 @@ disconnect peer = do
 
 
 {- | Create a connection to a peer. -}
-createConnection
-  :: ( Constraints e
-     , MonadCatch m
-     , MonadIO w
-     , MonadLoggerIO m
-     , MonadState (RuntimeState e) m
-     , MonadState (RuntimeState e) w
-     )
-  => Peer
-  -> m (PeerMessage e -> w ())
-createConnection peer = do
-    $(logInfo) $ "Creating connection to: " <> showt peer
-    rts@RuntimeState {rsSelf} <- get
-    latest <- liftIO $ atomically (newTVar (Just []))
-    logging <- askLoggerIO
-    liftIO . void . async . (`runLoggingT` logging) $
-      let
-        addy :: AddressDescription
-        addy =
-          AddressDescription
-            (
-              legionPeer (origin (rsClusterState rts)) peer
-              <> ":" <> showt peerMessagePort
-            )
-      in
-        finally 
-          (
-            (tryAny . runConduit) (
-              latestSource rsSelf latest .| openEgress addy
-            )
-          )
-          (liftIO $ atomically (writeTVar latest Nothing))
-      
-    return (\msg ->
-        join . liftIO . atomically $
-          readTVar latest >>= \case
-            Nothing ->
-              (pure . (`runLoggingT` logging) . disconnect) peer
-            Just msgs -> do
-              writeTVar latest (
-                  Just $ case msg of
-                    PMMerge _ ->
-                      msg : filter (\case {PMMerge _ -> False; _ -> True}) msgs
-                    PMFullMerge _ ->
-                      {-
-                        Full merges override both older full merges and
-                        older partial merges.
-                      -}
-                      msg : filter
-                              (\case
-                                PMMerge _ -> False
-                                PMFullMerge _ -> False
-                                _ -> True
-                              )
-                              msgs
-                    _ -> msgs ++ [msg] 
+defaultConnFactory :: ConnectionFactory e
+defaultConnFactory =
+    ConnectionFactory {
+      createConnection =
+        \peer -> do
+          $(logInfo) $ "Creating connection to: " <> showt peer
+          rts@RuntimeState {rsSelf} <- get
+          latest <- liftIO $ atomically (newTVar (Just []))
+          logging <- askLoggerIO
+          liftIO . void . async . (`runLoggingT` logging) $
+            let
+              addy :: AddressDescription
+              addy =
+                AddressDescription
+                  (
+                    legionPeer (origin (rsClusterState rts)) peer
+                    <> ":" <> showt peerMessagePort
+                  )
+            in
+              finally 
+                (
+                  (tryAny . runConduit) (
+                    latestSource rsSelf latest .| openEgress addy
+                  )
                 )
-              return (return ())
-      )
+                (liftIO $ atomically (writeTVar latest Nothing))
+            
+          return (\msg ->
+              join . liftIO . atomically $
+                readTVar latest >>= \case
+                  Nothing ->
+                    (pure . (`runLoggingT` logging) . disconnect) peer
+                  Just msgs -> do
+                    writeTVar latest (
+                        Just $ case msg of
+                          PMMerge _ ->
+                            msg : filter (\case {PMMerge _ -> False; _ -> True}) msgs
+                          PMFullMerge _ ->
+                            {-
+                              Full merges override both older full merges and
+                              older partial merges.
+                            -}
+                            msg : filter
+                                    (\case
+                                      PMMerge _ -> False
+                                      PMFullMerge _ -> False
+                                      _ -> True
+                                    )
+                                    msgs
+                          _ -> msgs ++ [msg] 
+                      )
+                    return (return ())
+            )
+    }
   where
     latestSource :: (MonadIO m)
       => Peer
@@ -1177,7 +1236,8 @@ deriving stock instance
 
 {- | Initialize the runtime state. -}
 makeRuntimeState :: (Constraints e, MonadLoggerIO m)
-  => (Peer -> EventFold ClusterName Peer (ClusterEvent e) -> IO ())
+  => ConnectionFactory e
+  -> (Peer -> EventFold ClusterName Peer (ClusterEvent e) -> IO ())
      {- ^ Callback when the cluster-wide powerstate changes. -}
   -> StartupMode e
   -> (Peer -> IO ()) {- ^ Launch a peer -}
@@ -1185,6 +1245,7 @@ makeRuntimeState :: (Constraints e, MonadLoggerIO m)
   -> m (RuntimeState e)
 
 makeRuntimeState
+    connFactory
     notify
     (NewCluster self goal clusterId)
     launch
@@ -1200,12 +1261,14 @@ makeRuntimeState
           )
     in
       makeRuntimeState
+        connFactory
         notify
         (Recover self (urEventFold ur))
         launch
         terminate
 
 makeRuntimeState
+    connFactory
     notify
     (JoinCluster self clusterName targetPeer)
     launch
@@ -1218,7 +1281,7 @@ makeRuntimeState
       . JoinRequest
       $ self
     $(logInfo) $ "Join response with cluster: " <> showt cluster
-    makeRuntimeState notify (Recover self cluster) launch terminate
+    makeRuntimeState connFactory notify (Recover self cluster) launch terminate
   where
     requestJoin :: (Constraints e, MonadLoggerIO m)
       => JoinRequest
@@ -1231,6 +1294,7 @@ makeRuntimeState
       <> ":" <> showt joinMessagePort
 
 makeRuntimeState
+    connFactory
     notify
     (Recover self clusterState)
     launch
@@ -1252,7 +1316,8 @@ makeRuntimeState
         rsCheckpointSid = infimumId clusterState,
         rsLastOrd = minBound,
         rsLaunch = launch,
-        rsTerminate = terminate
+        rsTerminate = terminate,
+        rsConnFactory = connFactory
       }
 
 
