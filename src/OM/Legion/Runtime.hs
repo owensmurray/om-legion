@@ -107,9 +107,9 @@ import qualified Data.Map as Map
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified OM.Fork as Fork
+import qualified OM.Socket.Server as Server
 import qualified System.Clock as Clock
 import qualified Text.Megaparsec as M
-import qualified OM.Socket.Server as Server
 
 {-# ANN module ("HLint: ignore Redundant <$>" :: String) #-}
 
@@ -435,8 +435,6 @@ parseLegionPeer =
       return (n, s)
   in
     parseMaybe parser
-
-
 
 
 {- |
