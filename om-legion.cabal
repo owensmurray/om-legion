@@ -20,6 +20,7 @@ cabal-version:       >=1.10
 library
   exposed-modules:     
     OM.Legion
+    OM.Legion.TestSupport
   other-modules:       
     OM.Legion.Conduit
     OM.Legion.Management
