@@ -443,11 +443,20 @@ parseLegionPeer =
   exception if something goes horribly wrong).
 -}
 executeRuntime
-  :: ( Constraints e
-     , MonadCatch m
-     , MonadLoggerIO m
+  :: ( Binary (Output e)
+     , Binary (State e)
+     , Binary e
+     , Default (State e)
+     , Eq (Output e)
+     , Eq e
+     , Event e
      , MonadFail m
-    )
+     , MonadLoggerIO m
+     , Show (Output e)
+     , Show (State e)
+     , Show e
+     , TopologySensitive e
+     )
   => IO ClusterGoal
   -> (ByteString -> IO ByteString)
      {- ^ Handle a user call request.  -}
