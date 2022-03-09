@@ -24,6 +24,15 @@ module OM.Legion.Runtime (
   forkLegionary,
   Runtime,
   StartupMode(..),
+  -- * Constraints
+  {- |
+    These are the constraints that need to be met in order to run a Legion
+    program. 'EventConstraints' and 'MonadConstraints' are provided as
+    shorthand for a longer list of constraints mainly because Haddocks
+    doesn't do a great job of rendering when then constraint list is long.
+  -}
+  EventConstraints,
+  MonadConstraints,
 
   -- * Runtime Interface.
   applyFast,
@@ -136,8 +145,8 @@ data RuntimeState e = RuntimeState {
                           (EventId Peer)
                           (Responder (JoinResponse e)),
                         {- ^
-                          The infimum of the powerstate we send to
-                          a new participant must have moved past the
+                          The infimum of the eventfold we send to a
+                          new participant must have moved past the
                           participation event itself. In other words,
                           the join must be totally consistent across the
                           cluster. The reason is that we can't make the
@@ -156,24 +165,22 @@ data RuntimeState e = RuntimeState {
   }
 
 
+{- |
+  Shorthand for all the monad constraints, mainly use so that
+  documentation renders better.
+-}
+type MonadConstraints m =
+  ( MonadCatch m
+  , MonadFail m
+  , MonadLoggerIO m
+  , MonadUnliftIO m
+  , Race
+  )
+
 {- | Fork the Legion runtime system. -}
 forkLegionary
-  :: ( Binary (Output e)
-     , Binary (State e)
-     , Binary e
-     , Default (State e)
-     , Eq (Output e)
-     , Eq e
-     , Event e
-     , MonadCatch m
-     , MonadFail m
-     , MonadLoggerIO m
-     , MonadUnliftIO m
-     , Race
-     , Show (Output e)
-     , Show (State e)
-     , Show e
-     , TopologySensitive e
+  :: ( EventConstraints e
+     , MonadConstraints m
      )
   => IO ClusterGoal
      {- ^ How to get the cluster goal from the connonical source. -}
@@ -182,7 +189,7 @@ forkLegionary
   -> (ByteString -> IO ByteString) {- ^ Handle a user call request. -}
   -> (ByteString -> IO ()) {- ^ Handle a user cast message. -}
   -> (Peer -> EventFold ClusterName Peer (ClusterEvent e) -> IO ())
-     {- ^ Callback when the cluster-wide powerstate changes. -}
+     {- ^ Callback when the cluster-wide eventfold changes. -}
   -> StartupMode e
      {- ^
        How to start the runtime, by creating new cluster or joining an
@@ -662,7 +669,7 @@ handleBroadcallTimeouts = do
 
 {- | Execute the incoming messages. -}
 handleRuntimeMessage :: (
-      Constraints e, MonadCatch m, MonadLoggerIO m
+      EventConstraints e, MonadCatch m, MonadLoggerIO m
     )
   => RuntimeMessage e
   -> StateT (RuntimeState e) m ()
@@ -821,7 +828,7 @@ newMessageId = do
   IO implied by the cluster update.
 -}
 updateCluster :: (
-      Constraints e, MonadCatch m, MonadLoggerIO m
+      EventConstraints e, MonadCatch m, MonadLoggerIO m
     )
   => EventFoldT ClusterName Peer (ClusterEvent e) (StateT (RuntimeState e) m) a
   -> StateT (RuntimeState e) m a
@@ -836,7 +843,7 @@ updateCluster action = do
   may not be able to perform acknowledgements on its own behalf.
 -}
 updateClusterAs :: (
-      Constraints e, MonadCatch m, MonadLoggerIO m
+      EventConstraints e, MonadCatch m, MonadLoggerIO m
     )
   => Peer
   -> EventFoldT
@@ -857,7 +864,7 @@ updateClusterAs asPeer action = do
 
 kickoffRebalance
   :: forall m e.
-     ( Constraints e
+     ( EventConstraints e
      , MonadCatch m
      , MonadLoggerIO m
      , MonadState (RuntimeState e) m
@@ -919,7 +926,7 @@ waitOn sid responder =
 
 {- | Propagates cluster information if necessary. -}
 propagate
-  :: ( Constraints e
+  :: ( EventConstraints e
      , MonadCatch m
      , MonadLoggerIO m
      , MonadState (RuntimeState e) m
@@ -999,7 +1006,7 @@ propagate = do
 
 {- | Send a peer message, creating a new connection if need be. -}
 sendPeer
-  :: ( Constraints e
+  :: ( EventConstraints e
      , MonadCatch m
      , MonadLoggerIO m
      , MonadState (RuntimeState e) m
@@ -1042,7 +1049,7 @@ disconnect peer = do
 
 {- | Create a connection to a peer. -}
 createConnection
-  :: ( Constraints e
+  :: ( EventConstraints e
      , MonadCatch m
      , MonadIO w
      , MonadLoggerIO m
@@ -1180,7 +1187,7 @@ deriving stock instance
 
 
 {- | Initialize the runtime state. -}
-makeRuntimeState :: (Constraints e, MonadLoggerIO m)
+makeRuntimeState :: (EventConstraints e, MonadLoggerIO m)
   => (Peer -> EventFold ClusterName Peer (ClusterEvent e) -> IO ())
      {- ^ Callback when the cluster-wide powerstate changes. -}
   -> StartupMode e
@@ -1224,7 +1231,7 @@ makeRuntimeState
     $(logInfo) $ "Join response with cluster: " <> showt cluster
     makeRuntimeState notify (Recover self cluster) launch terminate
   where
-    requestJoin :: (Constraints e, MonadLoggerIO m)
+    requestJoin :: (EventConstraints e, MonadLoggerIO m)
       => JoinRequest
       -> m (JoinResponse e)
     requestJoin joinMsg = ($ joinMsg) =<< connectServer addr Nothing
@@ -1270,8 +1277,8 @@ instance Binary JoinRequest
 newtype JoinResponse e
   = JoinOk (EventFold ClusterName Peer (ClusterEvent e))
   deriving stock (Generic)
-deriving stock instance (Constraints e) => Show (JoinResponse e)
-instance (Constraints e) => Binary (JoinResponse e)
+deriving stock instance (EventConstraints e) => Show (JoinResponse e)
+instance (EventConstraints e) => Binary (JoinResponse e)
 
 
 {- | Message Identifier. -}
@@ -1306,7 +1313,11 @@ nextMessageId :: MessageId -> MessageId
 nextMessageId (M sequenceId ord) = M sequenceId (succ ord)
 
 
-type Constraints e =
+{- |
+  Shorthand for all the constraints needed for the event type. Mainly
+  used so that documentation renders better.
+-}
+type EventConstraints e =
   ( Binary (State e)
   , Binary e
   , Default (State e)
