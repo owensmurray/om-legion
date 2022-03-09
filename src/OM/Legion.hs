@@ -3,6 +3,8 @@
 module OM.Legion (
   -- * Starting up the runtime.
   forkLegionary,
+  EventConstraints,
+  MonadConstraints,
   StartupMode(..),
   Runtime,
 
@@ -47,8 +49,9 @@ import OM.Legion.Management (ClusterGoal(ClusterGoal, cgNumNodes),
   TopologySensitive(allowDecommission, applyTopology), ClusterEvent,
   Peer, idealPeers)
 import OM.Legion.Runtime (ClusterName(ClusterName, unClusterName),
-  StartupMode(JoinCluster, NewCluster, Recover), Runtime, applyConsistent,
-  applyFast, broadcall, broadcast, call, cast, eject, forkLegionary,
-  getClusterName, getSelf, legionPeer, parseLegionPeer, readState)
+  StartupMode(JoinCluster, NewCluster, Recover), EventConstraints,
+  MonadConstraints, Runtime, applyConsistent, applyFast, broadcall,
+  broadcast, call, cast, eject, forkLegionary, getClusterName, getSelf,
+  legionPeer, parseLegionPeer, readState)
 
 
