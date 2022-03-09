@@ -60,7 +60,7 @@ import Control.Concurrent.Async (async)
 import Control.Concurrent.STM (TVar, atomically, newTVar, readTVar,
   retry, writeTVar)
 import Control.Exception.Safe (MonadCatch, finally, tryAny)
-import Control.Monad (join, mzero, void, when)
+import Control.Monad (join, mzero, unless, void, when)
 import Control.Monad.IO.Class (MonadIO(liftIO))
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Identity (runIdentity)
@@ -1000,8 +1000,10 @@ propagate = do
       => m ()
     disconnectObsolete = do
       (cluster, conns) <- gets (rsClusterState &&& rsConnections)
-      mapM_ disconnect $
-        Map.keysSet conns \\ EF.allParticipants cluster
+      let obsolete = Map.keysSet conns \\ EF.allParticipants cluster
+      unless (Set.null obsolete) $
+        $(logInfo) $ "Disconnecting obsolete: " <> showt obsolete
+      mapM_ disconnect obsolete
 
 
 {- | Send a peer message, creating a new connection if need be. -}
@@ -1077,7 +1079,9 @@ createConnection peer = do
           (
             (tryAny . runConduit) (
               latestSource rsSelf latest .| openEgress addy
-            )
+            ) >>= \case
+              Left err -> $(logInfo) $ "Disconnecting because of error: " <> showt err
+              Right () -> $(logInfo) "Disconnecting because source dried up."
           )
           (liftIO $ atomically (writeTVar latest Nothing))
       
