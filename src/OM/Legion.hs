@@ -23,6 +23,10 @@ module OM.Legion (
   getSelf,
   getClusterName,
 
+  -- * Observability
+  getStats,
+  Stats(..),
+
   -- * Cluster Topology
   eject,
   Peer(..),
@@ -33,8 +37,8 @@ module OM.Legion (
 
 import OM.Legion.Runtime (ClusterName(ClusterName, unClusterName),
   Peer(Peer, unPeer), StartupMode(JoinCluster, NewCluster, Recover),
-  EventConstraints, MonadConstraints, Runtime, applyConsistent, applyFast,
-  broadcall, broadcast, call, cast, eject, forkLegionary, getClusterName,
-  getSelf, readState)
+  Stats(Stats, timeWithoutProgress), EventConstraints, MonadConstraints,
+  Runtime, applyConsistent, applyFast, broadcall, broadcast, call, cast,
+  eject, forkLegionary, getClusterName, getSelf, getStats, readState)
 
 

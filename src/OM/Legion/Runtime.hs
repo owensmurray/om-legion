@@ -1,4 +1,5 @@
 {-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -44,6 +45,8 @@ module OM.Legion.Runtime (
   eject,
   getSelf,
   getClusterName,
+  getStats,
+  Stats(..),
 
   -- * Cluster Topology
   ClusterName(..),
@@ -82,7 +85,8 @@ import Data.Map (Map)
 import Data.Set ((\\), Set, member)
 import Data.String (IsString, fromString)
 import Data.Text (Text)
-import Data.Time (DiffTime, UTCTime, diffUTCTime, getCurrentTime)
+import Data.Time (DiffTime, UTCTime, diffTimeToPicoseconds, diffUTCTime,
+  getCurrentTime, picosecondsToDiffTime)
 import Data.UUID (UUID)
 import Data.UUID.V1 (nextUUID)
 import GHC.Generics (Generic)
@@ -97,6 +101,7 @@ import OM.Socket.Server (connectServer, openServer)
 import System.Clock (TimeSpec)
 import System.Random.Shuffle (shuffleM)
 import Web.HttpApiData (FromHttpApiData, ToHttpApiData)
+import qualified Data.Binary as Binary
 import qualified Data.CRDT.EventFold as EF
 import qualified Data.Map as Map
 import qualified Data.Set as Set
@@ -141,6 +146,7 @@ data RuntimeState e = RuntimeState
                         -}
   ,  rsCheckpointSid :: EventId Peer
   , rsCheckpointTime :: UTCTime
+  ,      rsDivergent :: Map Peer (EventId Peer, TimeSpec)
   }
 
 
@@ -212,6 +218,31 @@ instance Actor (Runtime e) where
   actorChan = actorChan . rChan
 
 
+{- |
+  Some basic stats that can be used to intuit the health of the cluster.
+  We currently only report on how long it has been since some peer has
+  made some progress.
+-}
+newtype Stats = Stats
+  { timeWithoutProgress :: Map Peer DiffTime
+                           {- ^
+                             How long it has been since a 'Peer' has
+                             made progress (if it is 'divergent'). If
+                             the peer is completely up to date as far as
+                             we know, then it does not appear in the map
+                             at all. Only peers which we are expecting
+                             to make progress appear.
+                           -}
+  }
+  deriving stock (Generic, Show, Eq)
+  deriving anyclass (ToJSON)
+instance Binary Stats where
+  get =
+    Stats <$> (fmap picosecondsToDiffTime <$> Binary.get)
+  put (Stats timeWithoutProgress) =
+    Binary.put (diffTimeToPicoseconds <$> timeWithoutProgress)
+
+      
 {- | The type of the runtime message channel. -}
 newtype RChan e = RChan {
     unRChan :: Chan (RuntimeMessage e)
@@ -324,6 +355,7 @@ data RuntimeMessage e
   | SendCallResponse Peer MessageId ByteString
   | HandleCallResponse Peer MessageId ByteString
   | Resend (Responder ())
+  | GetStats (Responder (Map Peer (EventId Peer, TimeSpec)))
 deriving stock instance
     ( Show e
     , Show (Output e)
@@ -524,6 +556,9 @@ handleRuntimeMessage :: (
   => RuntimeMessage e
   -> StateT (RuntimeState e) m ()
 
+handleRuntimeMessage (GetStats responder) =
+  respond responder =<< gets rsDivergent
+
 handleRuntimeMessage (ApplyFast e responder) =
   updateCluster $
     fst <$> event e >>= respond responder
@@ -699,17 +734,30 @@ updateClusterAs
        a
   -> StateT (RuntimeState e) m a
 updateClusterAs asPeer action = do
-  cluster <- gets rsClusterState
+  (cluster, oldDivergent) <- gets (rsClusterState &&& rsDivergent)
   (v, ur) <- runEventFoldT asPeer cluster action
   liftIO . ($ urEventFold ur) . rsNotify =<< get
+  now <- liftIO getTime
   modify
     (\state ->
       let
         newCluster :: EventFold ClusterName Peer e
         newCluster = urEventFold ur
+
+        newDivergent :: Map Peer (EventId Peer, TimeSpec)
+        newDivergent =
+          Map.differenceWith
+            (\new@(newEid, _) old@(oldEid, _) ->
+              if newEid > oldEid
+                then Just new
+                else Just old
+            )
+            ((,now) <$> divergent newCluster)
+            oldDivergent
       in
         state
           { rsClusterState = newCluster
+          , rsDivergent = newDivergent
           }
     )
   respondToWaiting (urOutputs ur)
@@ -1045,6 +1093,7 @@ makeRuntimeState
         , rsJoins = mempty
         , rsCheckpointTime = now
         , rsCheckpointSid = infimumId clusterState
+        , rsDivergent = mempty
         }
 
 
@@ -1173,5 +1222,25 @@ newtype Peer = Peer {
     Eq, Ord, Show, ToJSON, Binary, ToJSONKey, FromJSON, FromJSONKey,
     FromHttpApiData, ToHttpApiData
   )
+
+
+{- |
+  Retrieve some basic stats that can be used to intuit the health of
+  the cluster.
+-}
+getStats :: (MonadIO m) => Runtime e -> m Stats
+getStats runtime = do
+  divergent_ <- Fork.call runtime GetStats
+  now <- liftIO getTime
+  pure
+    Stats
+      { timeWithoutProgress = diffTime now . snd <$> divergent_
+      }
+
+
+{- | Take the difference of two time specs. -}
+diffTime :: TimeSpec -> TimeSpec -> DiffTime
+diffTime a b =
+  realToFrac (Clock.toNanoSecs (Clock.diffTimeSpec a b)) / 1_000_000_000
 
 
