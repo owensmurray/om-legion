@@ -325,7 +325,7 @@ broadcast runtime msg = Fork.cast runtime (Broadcast msg)
 
 {- | Eject a peer from the cluster. -}
 eject :: (MonadIO m) => Runtime e -> Peer -> m ()
-eject runtime peer = Fork.cast runtime (Eject peer)
+eject runtime peer = Fork.call runtime (Eject peer)
 
 
 {- | Get the identifier for the local peer. -}
@@ -337,7 +337,7 @@ getSelf = rSelf
 data RuntimeMessage e
   = ApplyFast e (Responder (Output e))
   | ApplyConsistent e (Responder (Output e))
-  | Eject Peer
+  | Eject Peer (Responder ())
   | Merge (Diff ClusterName Peer e)
   | FullMerge (EventFold ClusterName Peer e)
   | Join JoinRequest (Responder (JoinResponse e))
@@ -567,9 +567,20 @@ handleRuntimeMessage (ApplyConsistent e responder) = do
   rs <- get
   $(logDebug) $ "Waiting: " <> showt (rsWaiting rs)
 
-handleRuntimeMessage (Eject peer) =
+handleRuntimeMessage (Eject peer responder) = do
   updateClusterAs peer $
     void $ disassociate peer
+  propagate
+  {- ↓
+    This is an awful hack. The problem is that 'propagate' uses
+    'sendPeer', but 'sendPeer' itself is asynchronous (though it should be
+    very fast). The correct solution is a bit tricky. We can either figure
+    out some way to block all the way down through the internals of the
+    connection management, or else maybe extend the "join port" server
+    endpoint to accept eject notifications as well as join requests.
+  -}
+  liftIO $ threadDelay 500_000
+  respond responder ()
 
 handleRuntimeMessage (Merge other) =
   updateCluster $
