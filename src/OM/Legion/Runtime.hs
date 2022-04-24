@@ -847,7 +847,8 @@ updateCluster action = do
   may not be able to perform acknowledgements on its own behalf.
 -}
 updateClusterAs
-  :: ( EventConstraints e
+  :: forall e m a.
+     ( EventConstraints e
      , MonadCatch m
      , MonadLoggerIO m
      )
@@ -860,10 +861,19 @@ updateClusterAs
        a
   -> StateT (RuntimeState e) m a
 updateClusterAs asPeer action = do
-  RuntimeState {rsClusterState} <- get
-  (v, ur) <- runEventFoldT asPeer rsClusterState action
+  cluster <- gets rsClusterState
+  (v, ur) <- runEventFoldT asPeer cluster action
   liftIO . ($ urEventFold ur) . rsNotify =<< get
-  modify (\state -> state {rsClusterState = urEventFold ur})
+  modify
+    (\state ->
+      let
+        newCluster :: EventFold ClusterName Peer e
+        newCluster = urEventFold ur
+      in
+        state
+          { rsClusterState = newCluster
+          }
+    )
   respondToWaiting (urOutputs ur)
   kickoffRebalance
   return v
