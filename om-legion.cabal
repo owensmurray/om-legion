@@ -46,6 +46,7 @@ common dependencies
 
 common warnings
   ghc-options:
+    -Wall
     -Wmissing-deriving-strategies
     -Wmissing-export-lists
     -Wmissing-import-lists
