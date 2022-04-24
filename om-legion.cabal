@@ -58,7 +58,6 @@ library
     OM.Legion
   other-modules:       
     OM.Legion.Conduit
-    OM.Legion.Management
     OM.Legion.Runtime
   -- other-extensions:    
   hs-source-dirs: src
