@@ -11,7 +11,6 @@ module OM.Legion (
   -- * Applying state changes.
   applyFast,
   applyConsistent,
-  eject,
 
   -- * Sending messages around the cluster.
   cast,
@@ -25,6 +24,7 @@ module OM.Legion (
   getClusterName,
 
   -- * Cluster Topology
+  eject,
   Peer,
   ClusterName(..),
   ClusterGoal(..),

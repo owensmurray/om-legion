@@ -16,7 +16,6 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns #-}
-{-# OPTIONS_GHC -Wmissing-import-lists #-}
 
 {- | The meat of the Legion runtime implementation. -}
 module OM.Legion.Runtime (
@@ -124,26 +123,26 @@ import qualified Text.Megaparsec as M
 {-# ANN module ("HLint: ignore Redundant <$>" :: String) #-}
 
 {- | The Legionary runtime state. -}
-data RuntimeState e = RuntimeState {
-              rsSelf :: Peer,
-      rsClusterState :: EventFold ClusterName Peer (ClusterEvent e),
-       rsConnections :: Map
+data RuntimeState e = RuntimeState
+  {           rsSelf :: Peer
+  ,   rsClusterState :: EventFold ClusterName Peer (ClusterEvent e)
+  ,    rsConnections :: Map
                           Peer
-                          (PeerMessage e -> StateT (RuntimeState e) IO ()),
-           rsWaiting :: Map (EventId Peer) (Responder (Output e)),
-             rsCalls :: Map MessageId (Responder ByteString),
-        rsBroadcalls :: Map
+                          (PeerMessage e -> StateT (RuntimeState e) IO ())
+  ,        rsWaiting :: Map (EventId Peer) (Responder (Output e))
+  ,          rsCalls :: Map MessageId (Responder ByteString)
+  ,     rsBroadcalls :: Map
                           MessageId
                           (
                             Map Peer (Maybe ByteString),
                             Responder (Map Peer (Maybe ByteString)),
                             TimeSpec
-                          ),
-            rsNextId :: MessageId,
-            rsNotify :: EventFold ClusterName Peer (ClusterEvent e) -> IO (),
-             rsJoins :: Map
+                          )
+  ,         rsNextId :: MessageId
+  ,         rsNotify :: EventFold ClusterName Peer (ClusterEvent e) -> IO ()
+  ,          rsJoins :: Map
                           (EventId Peer)
-                          (Responder (JoinResponse e)),
+                          (Responder (JoinResponse e))
                         {- ^
                           The infimum of the eventfold we send to a
                           new participant must have moved past the
@@ -156,12 +155,12 @@ data RuntimeState e = RuntimeState {
                           such events.  Therefore, this field tracks the
                           outstanding joins until they become consistent.
                         -}
-     rsCheckpointSid :: EventId Peer,
-    rsCheckpointTime :: UTCTime,
-           rsLastOrd :: RebalanceOrdinal,
+  ,  rsCheckpointSid :: EventId Peer
+  , rsCheckpointTime :: UTCTime
+  ,        rsLastOrd :: RebalanceOrdinal
                         {- ^ The last attempted rebalancing step. -}
-            rsLaunch :: Peer -> IO (), {- ^ How to launch a new peer. -}
-         rsTerminate :: forall void. IO void {- ^ How to terminate ourself. -}
+  ,         rsLaunch :: Peer -> IO () {- ^ How to launch a new peer. -}
+  ,      rsTerminate :: forall void. IO void {- ^ How to terminate ourself. -}
   }
 
 
@@ -176,6 +175,7 @@ type MonadConstraints m =
   , MonadUnliftIO m
   , Race
   )
+
 
 {- | Fork the Legion runtime system. -}
 forkLegionary
@@ -218,21 +218,22 @@ forkLegionary
     let
       clusterId :: ClusterName
       clusterId = EF.origin (rsClusterState rts)
-    return Runtime {
-             rChan = runtimeChan,
-             rSelf = rsSelf rts,
-        rClusterId = clusterId
-      }
+    return
+      Runtime
+        { rChan = runtimeChan
+        , rSelf = rsSelf rts
+        , rClusterId = clusterId
+        }
   where
     logPrefix :: Peer -> LogStr
     logPrefix self_ = "[" <> showt self_ <> "] "
 
 
 {- | A handle on the Legion runtime. -}
-data Runtime e = Runtime {
-         rChan :: RChan e,
-         rSelf :: Peer,
-    rClusterId :: ClusterName
+data Runtime e = Runtime
+  {      rChan :: RChan e
+  ,      rSelf :: Peer
+  , rClusterId :: ClusterName
   }
 instance Actor (Runtime e) where
   type Msg (Runtime e) = RuntimeMessage e
@@ -474,7 +475,10 @@ executeRuntime
      {- ^ Handle a user cast message. -}
   -> RuntimeState e
   -> RChan e
-    {- ^ A source of requests, together with a way to respond to the requets. -}
+     {- ^
+       A source of requests, together with a way to respond to the
+       requets.
+     -}
   -> m ()
 executeRuntime
     getClusterGoal
@@ -842,9 +846,11 @@ updateCluster action = do
   peer. This is required for e.g. the peer eject case, when the ejected peer
   may not be able to perform acknowledgements on its own behalf.
 -}
-updateClusterAs :: (
-      EventConstraints e, MonadCatch m, MonadLoggerIO m
-    )
+updateClusterAs
+  :: ( EventConstraints e
+     , MonadCatch m
+     , MonadLoggerIO m
+     )
   => Peer
   -> EventFoldT
        ClusterName
@@ -1253,22 +1259,23 @@ makeRuntimeState
   = do
     now <- liftIO getCurrentTime
     rsNextId <- newSequence
-    return RuntimeState {
-        rsSelf = self,
-        rsClusterState = clusterState,
-        rsConnections = mempty,
-        rsWaiting = mempty,
-        rsCalls = mempty,
-        rsBroadcalls = mempty,
-        rsNextId,
-        rsNotify = notify self,
-        rsJoins = mempty,
-        rsCheckpointTime = now,
-        rsCheckpointSid = infimumId clusterState,
-        rsLastOrd = minBound,
-        rsLaunch = launch,
-        rsTerminate = terminate
-      }
+    return
+      RuntimeState
+        { rsSelf = self
+        , rsClusterState = clusterState
+        , rsConnections = mempty
+        , rsWaiting = mempty
+        , rsCalls = mempty
+        , rsBroadcalls = mempty
+        , rsNextId
+        , rsNotify = notify self
+        , rsJoins = mempty
+        , rsCheckpointTime = now
+        , rsCheckpointSid = infimumId clusterState
+        , rsLastOrd = minBound
+        , rsLaunch = launch
+        , rsTerminate = terminate
+        }
 
 
 {- | This is the type of a join request message. -}
