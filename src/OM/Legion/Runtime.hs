@@ -1,4 +1,5 @@
 {-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -16,7 +17,6 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns #-}
-{-# OPTIONS_GHC -Wmissing-import-lists #-}
 
 {- | The meat of the Legion runtime implementation. -}
 module OM.Legion.Runtime (
@@ -24,14 +24,8 @@ module OM.Legion.Runtime (
   forkLegionary,
   Runtime,
   StartupMode(..),
+
   -- * Constraints
-  {- |
-    These are the constraints that need to be met in order to run a Legion
-    program. 'EventConstraints' and 'MonadConstraints' are provided as
-    shorthand for a longer list of constraints mainly because Haddocks
-    doesn't do a great job of rendering when then constraint list is long.
-  -}
-  EventConstraints,
   MonadConstraints,
 
   -- * Runtime Interface.
@@ -45,125 +39,70 @@ module OM.Legion.Runtime (
   eject,
   getSelf,
   getClusterName,
-
-  -- * Cluster Topology
-  ClusterName(..),
-  parseLegionPeer,
-  legionPeer,
+  getStats,
+  Stats(..),
 ) where
 
 
 import Control.Arrow ((&&&))
 import Control.Concurrent (Chan, newChan, readChan, threadDelay,
   writeChan)
-import Control.Concurrent.Async (async)
-import Control.Concurrent.STM (TVar, atomically, newTVar, readTVar,
-  retry, writeTVar)
-import Control.Exception.Safe (MonadCatch, finally, tryAny)
-import Control.Monad (join, mzero, unless, void, when)
+import Control.Exception.Safe (MonadCatch, tryAny)
+import Control.Monad (unless, void, when)
 import Control.Monad.IO.Class (MonadIO(liftIO))
 import Control.Monad.IO.Unlift (MonadUnliftIO)
-import Control.Monad.Identity (runIdentity)
 import Control.Monad.Logger (LoggingT(runLoggingT),
   MonadLoggerIO(askLoggerIO), LogStr, MonadLogger, logDebug, logError,
-  logInfo, logWarn)
-import Control.Monad.State (MonadState, StateT, evalStateT, get, gets,
-  modify, put, runStateT)
+  logInfo)
+import Control.Monad.State (MonadState(get, put), StateT, evalStateT,
+  gets, modify)
 import Control.Monad.Trans.Class (lift)
-import Data.Aeson (FromJSON, ToJSON)
-import Data.Binary (Binary, Word64)
+import Data.Aeson (ToJSON)
+import Data.Binary (Binary)
 import Data.ByteString.Lazy (ByteString)
 import Data.CRDT.EventFold (Event(Output, State),
   UpdateResult(urEventFold, urOutputs), Diff, EventFold, EventId,
-  divergent, events, infimumId, infimumParticipants, infimumValue,
-  origin, projParticipants, projectedValue)
+  divergent, events, infimumId, infimumParticipants, projParticipants)
 import Data.CRDT.EventFold.Monad (MonadUpdateEF(diffMerge, disassociate,
   event, fullMerge, participate), EventFoldT, runEventFoldT)
-import Data.Conduit ((.|), ConduitT, awaitForever, runConduit, yield)
+import Data.Conduit ((.|), awaitForever, runConduit, yield)
 import Data.Default.Class (Default)
 import Data.Int (Int64)
 import Data.Map (Map)
-import Data.Proxy (Proxy(Proxy))
 import Data.Set ((\\), Set, member)
-import Data.String (IsString, fromString)
-import Data.Text (Text)
-import Data.Time (DiffTime, UTCTime, addUTCTime, diffUTCTime,
-  getCurrentTime, utctDayTime)
+import Data.String (IsString(fromString))
+import Data.Time (DiffTime, diffTimeToPicoseconds, picosecondsToDiffTime)
 import Data.UUID (UUID)
 import Data.UUID.V1 (nextUUID)
-import Data.Void (Void)
 import GHC.Generics (Generic)
 import Network.Socket (PortNumber)
-import Numeric.Natural (Natural)
 import OM.Fork (Actor(Msg, actorChan), Race, Responder, race)
 import OM.Legion.Conduit (chanToSink)
-import OM.Legion.Management (Action(Commission, Decommission), Peer(Peer),
-  TopologyEvent(CommissionComplete, Terminated, UpdateClusterGoal),
-  ClusterEvent, ClusterGoal, RebalanceOrdinal, TopologySensitive,
-  allowDecommission, cGoal, cOrd, cPlan, cgNumNodes, topEvent,
-  unPeerOrdinal, userEvent)
+import OM.Legion.Connection (JoinResponse(JoinOk),
+  RuntimeState(RuntimeState, rsBroadcalls, rsCalls, rsClusterState,
+  rsConnections, rsDivergent, rsJoins, rsNextId, rsNotify, rsSelf,
+  rsWaiting), EventConstraints, disconnect, peerMessagePort, sendPeer)
+import OM.Legion.MsgChan (MessageId(M), Peer(unPeer), PeerMessage(PMCall,
+  PMCallResponse, PMCast, PMFullMerge, PMMerge), ClusterName)
 import OM.Logging (withPrefix)
 import OM.Show (showt)
 import OM.Socket (AddressDescription(AddressDescription),
-  Endpoint(Endpoint), openEgress, openIngress)
+  Endpoint(Endpoint), openIngress)
 import OM.Socket.Server (connectServer, openServer)
 import System.Clock (TimeSpec)
 import System.Random.Shuffle (shuffleM)
-import Text.Megaparsec (MonadParsec, Parsec, Token, anySingle, eof,
-  lookAhead, manyTill, parseMaybe, satisfy)
-import Web.HttpApiData (FromHttpApiData, ToHttpApiData)
-import qualified Data.CRDT.EventFold as EF
-import qualified Data.Map as Map
-import qualified Data.Set as Set
-import qualified Data.Text as T
-import qualified OM.Fork as Fork
+import qualified Data.Binary as Binary (Binary(get, put))
+import qualified Data.CRDT.EventFold as EF (allParticipants, new, origin)
+import qualified Data.Map as Map (delete, differenceWith, fromList,
+  insert, keysSet, lookup, partitionWithKey, toList)
+import qualified Data.Set as Set (delete, null, toList)
+import qualified OM.Fork as Fork (call, cast, respond)
 import qualified OM.Socket.Server as Server
-import qualified System.Clock as Clock
-import qualified Text.Megaparsec as M
+  (AddressDescription(AddressDescription), Endpoint(Endpoint))
+import qualified System.Clock as Clock (Clock(Monotonic),
+  TimeSpec(TimeSpec, nsec, sec), diffTimeSpec, getTime, toNanoSecs)
 
 {-# ANN module ("HLint: ignore Redundant <$>" :: String) #-}
-
-{- | The Legionary runtime state. -}
-data RuntimeState e = RuntimeState {
-              rsSelf :: Peer,
-      rsClusterState :: EventFold ClusterName Peer (ClusterEvent e),
-       rsConnections :: Map
-                          Peer
-                          (PeerMessage e -> StateT (RuntimeState e) IO ()),
-           rsWaiting :: Map (EventId Peer) (Responder (Output e)),
-             rsCalls :: Map MessageId (Responder ByteString),
-        rsBroadcalls :: Map
-                          MessageId
-                          (
-                            Map Peer (Maybe ByteString),
-                            Responder (Map Peer (Maybe ByteString)),
-                            TimeSpec
-                          ),
-            rsNextId :: MessageId,
-            rsNotify :: EventFold ClusterName Peer (ClusterEvent e) -> IO (),
-             rsJoins :: Map
-                          (EventId Peer)
-                          (Responder (JoinResponse e)),
-                        {- ^
-                          The infimum of the eventfold we send to a
-                          new participant must have moved past the
-                          participation event itself. In other words,
-                          the join must be totally consistent across the
-                          cluster. The reason is that we can't make the
-                          new participant responsible for applying events
-                          that occur before it joined the cluster, because
-                          it has no way to ensure that it can collect all
-                          such events.  Therefore, this field tracks the
-                          outstanding joins until they become consistent.
-                        -}
-     rsCheckpointSid :: EventId Peer,
-    rsCheckpointTime :: UTCTime,
-           rsLastOrd :: RebalanceOrdinal,
-                        {- ^ The last attempted rebalancing step. -}
-            rsLaunch :: Peer -> IO (), {- ^ How to launch a new peer. -}
-         rsTerminate :: forall void. IO void {- ^ How to terminate ourself. -}
-  }
-
 
 {- |
   Shorthand for all the monad constraints, mainly use so that
@@ -177,18 +116,15 @@ type MonadConstraints m =
   , Race
   )
 
+
 {- | Fork the Legion runtime system. -}
 forkLegionary
   :: ( EventConstraints e
      , MonadConstraints m
      )
-  => IO ClusterGoal
-     {- ^ How to get the cluster goal from the connonical source. -}
-  -> (Peer -> IO ()) {- ^ How to launch a new peer. -}
-  -> (forall void. IO void) {- ^ How to terminate ourself. -}
-  -> (ByteString -> IO ByteString) {- ^ Handle a user call request. -}
+  => (ByteString -> IO ByteString) {- ^ Handle a user call request. -}
   -> (ByteString -> IO ()) {- ^ Handle a user cast message. -}
-  -> (Peer -> EventFold ClusterName Peer (ClusterEvent e) -> IO ())
+  -> (Peer -> EventFold ClusterName Peer e -> IO ())
      {- ^ Callback when the cluster-wide eventfold changes. -}
   -> StartupMode e
      {- ^
@@ -197,20 +133,16 @@ forkLegionary
      -}
   -> m (Runtime e)
 forkLegionary
-    getClusterGoal
-    launch
-    terminate
     handleUserCall
     handleUserCast
     notify
     startupMode
   = do
-    rts <- makeRuntimeState notify startupMode launch terminate
+    rts <- makeRuntimeState notify startupMode
     runtimeChan <- RChan <$> liftIO newChan
     logging <- withPrefix (logPrefix (rsSelf rts)) <$> askLoggerIO
     (`runLoggingT` logging) $
       executeRuntime
-        getClusterGoal
         handleUserCall
         handleUserCast
         rts
@@ -218,27 +150,53 @@ forkLegionary
     let
       clusterId :: ClusterName
       clusterId = EF.origin (rsClusterState rts)
-    return Runtime {
-             rChan = runtimeChan,
-             rSelf = rsSelf rts,
-        rClusterId = clusterId
-      }
+    return
+      Runtime
+        { rChan = runtimeChan
+        , rSelf = rsSelf rts
+        , rClusterId = clusterId
+        }
   where
     logPrefix :: Peer -> LogStr
     logPrefix self_ = "[" <> showt self_ <> "] "
 
 
 {- | A handle on the Legion runtime. -}
-data Runtime e = Runtime {
-         rChan :: RChan e,
-         rSelf :: Peer,
-    rClusterId :: ClusterName
+data Runtime e = Runtime
+  {      rChan :: RChan e
+  ,      rSelf :: Peer
+  , rClusterId :: ClusterName
   }
 instance Actor (Runtime e) where
   type Msg (Runtime e) = RuntimeMessage e
   actorChan = actorChan . rChan
 
 
+{- |
+  Some basic stats that can be used to intuit the health of the cluster.
+  We currently only report on how long it has been since some peer has
+  made some progress.
+-}
+newtype Stats = Stats
+  { timeWithoutProgress :: Map Peer DiffTime
+                           {- ^
+                             How long it has been since a 'Peer' has
+                             made progress (if it is 'divergent'). If
+                             the peer is completely up to date as far as
+                             we know, then it does not appear in the map
+                             at all. Only peers which we are expecting
+                             to make progress appear.
+                           -}
+  }
+  deriving stock (Generic, Show, Eq)
+  deriving anyclass (ToJSON)
+instance Binary Stats where
+  get =
+    Stats <$> (fmap picosecondsToDiffTime <$> Binary.get)
+  put (Stats timeWithoutProgress) =
+    Binary.put (diffTimeToPicoseconds <$> timeWithoutProgress)
+
+      
 {- | The type of the runtime message channel. -}
 newtype RChan e = RChan {
     unRChan :: Chan (RuntimeMessage e)
@@ -277,7 +235,7 @@ applyConsistent runtime e = Fork.call runtime (ApplyConsistent e)
 {- | Read the current powerstate value. -}
 readState :: (MonadIO m)
   => Runtime e
-  -> m (EventFold ClusterName Peer (ClusterEvent e))
+  -> m (EventFold ClusterName Peer e)
 readState runtime = Fork.call runtime ReadState
 
 
@@ -324,7 +282,7 @@ broadcast runtime msg = Fork.cast runtime (Broadcast msg)
 
 {- | Eject a peer from the cluster. -}
 eject :: (MonadIO m) => Runtime e -> Peer -> m ()
-eject runtime peer = Fork.cast runtime (Eject peer)
+eject runtime peer = Fork.call runtime (Eject peer)
 
 
 {- | Get the identifier for the local peer. -}
@@ -335,13 +293,12 @@ getSelf = rSelf
 {- | The types of messages that can be sent to the runtime. -}
 data RuntimeMessage e
   = ApplyFast e (Responder (Output e))
-  | ManagementEvent TopologyEvent
   | ApplyConsistent e (Responder (Output e))
-  | Eject Peer
-  | Merge (Diff ClusterName Peer (ClusterEvent e))
-  | FullMerge (EventFold ClusterName Peer (ClusterEvent e))
+  | Eject Peer (Responder ())
+  | Merge (Diff ClusterName Peer e)
+  | FullMerge (EventFold ClusterName Peer e)
   | Join JoinRequest (Responder (JoinResponse e))
-  | ReadState (Responder (EventFold ClusterName Peer (ClusterEvent e)))
+  | ReadState (Responder (EventFold ClusterName Peer e))
   | Call Peer ByteString (Responder ByteString)
   | Cast Peer ByteString
   | Broadcall
@@ -352,6 +309,7 @@ data RuntimeMessage e
   | SendCallResponse Peer MessageId ByteString
   | HandleCallResponse Peer MessageId ByteString
   | Resend (Responder ())
+  | GetStats (Responder (Map Peer (EventId Peer, TimeSpec)))
 deriving stock instance
     ( Show e
     , Show (Output e)
@@ -359,89 +317,6 @@ deriving stock instance
     )
   =>
     Show (RuntimeMessage e)
-
-
-{- | The types of messages that can be sent from one peer to another. -}
-data PeerMessage e
-  = PMMerge (Diff ClusterName Peer (ClusterEvent e))
-    {- ^ Send a powerstate merge. -}
-  | PMFullMerge (EventFold ClusterName Peer (ClusterEvent e))
-    {- ^ Send a full merge. -}
-  | PMCall Peer MessageId ByteString
-    {- ^ Send a user call message from one peer to another. -}
-  | PMCast ByteString
-    {- ^ Send a user cast message from one peer to another. -}
-  | PMCallResponse Peer MessageId ByteString
-    {- ^ Send a response to a user call message. -}
-  deriving stock (Generic)
-deriving stock instance
-    ( Show e
-    , Show (Output e)
-    , Show (State e)
-    )
-  =>
-    Show (PeerMessage e)
-instance (Binary e, Binary (Output e), Binary (State e)) => Binary (PeerMessage e)
-
-
-{- | Get the node name for a particular peer within a legion cluster. -}
-legionPeer :: (IsString a) => ClusterName -> Peer -> a
-legionPeer name peer =
-    fromString . T.unpack $ unClusterName name <> "-" <> suffix
-  where
-    suffix :: Text
-    suffix = 
-      let
-        numStr :: Text
-        numStr = showt peer
-      in
-        foldr (<>) "" (replicate (2 - T.length numStr) "0")
-        <> numStr
-
-{- | Parse a node name into it's legion peer components. -}
-parseLegionPeer :: Text -> Maybe (ClusterName, Peer)
-parseLegionPeer =
-  let
-    dash :: (MonadParsec e s m, Token s ~ Char) => m ()
-    dash = void $ satisfy (== '-')
-
-    digit :: (MonadParsec e s m, Token s ~ Char) => m Natural
-    digit =
-      M.try $
-        anySingle >>= \case
-          '0' -> pure 0
-          '1' -> pure 1
-          '2' -> pure 2
-          '3' -> pure 3
-          '4' -> pure 4
-          '5' -> pure 5
-          '6' -> pure 6
-          '7' -> pure 7
-          '8' -> pure 8
-          '9' -> pure 9
-          _ -> mzero
-
-    ord :: (MonadParsec e s m, Token s ~ Char) => m Peer
-    ord =
-      M.try (do
-        tens <- digit
-        ones <- digit
-        return (Peer ((tens * 10) + ones))
-      )
-    
-    suffix :: (MonadParsec e s m, Token s ~ Char) => m Peer
-    suffix = M.try $ (dash >> ord) <* eof
-
-    name :: (MonadParsec e s m, Token s ~ Char) => m ClusterName
-    name = ClusterName . T.pack <$> manyTill anySingle (lookAhead suffix)
-
-    parser :: Parsec () Text (ClusterName, Peer)
-    parser = do
-      n <- name
-      s <- suffix
-      return (n, s)
-  in
-    parseMaybe parser
 
 
 {- |
@@ -456,7 +331,7 @@ executeRuntime
      , Default (State e)
      , Eq (Output e)
      , Eq e
-     , Event e
+     , Event Peer e
      , MonadCatch m
      , MonadFail m
      , MonadLoggerIO m
@@ -465,19 +340,19 @@ executeRuntime
      , Show (Output e)
      , Show (State e)
      , Show e
-     , TopologySensitive e
      )
-  => IO ClusterGoal
-  -> (ByteString -> IO ByteString)
+  => (ByteString -> IO ByteString)
      {- ^ Handle a user call request.  -}
   -> (ByteString -> IO ())
      {- ^ Handle a user cast message. -}
   -> RuntimeState e
   -> RChan e
-    {- ^ A source of requests, together with a way to respond to the requets. -}
+     {- ^
+       A source of requests, together with a way to respond to the
+       requets.
+     -}
   -> m ()
 executeRuntime
-    getClusterGoal
     handleUserCall
     handleUserCast
     rts
@@ -487,7 +362,6 @@ executeRuntime
     race "om-legion peer listener" runPeerListener
     race "om-legion join listener" runJoinListener
     race "om-legion periodic resend" runPeriodicResent
-    race "om-legion cluster resize loop" clusterResizeLoop
     race "om-legion message handler" $
       (`evalStateT` rts)
         (
@@ -510,67 +384,6 @@ executeRuntime
             handleMessages
         )
   where
-    clusterResizeLoop :: (MonadCatch m, MonadLoggerIO m) => m Void
-    clusterResizeLoop =
-        tryAny (liftIO getClusterGoal) >>= \case
-          Left err -> do
-            $(logWarn)
-              $ "Problem when checking to see if we need to "
-              <> "resize the cluser: " <> showt err
-            liftIO (threadDelay 5_000_000)
-            clusterResizeLoop
-          Right newGoal -> do
-            oldGoal <-
-              cGoal . fst . projectedValue <$> Fork.call runtimeChan ReadState
-            when (oldGoal /= newGoal) $
-              Fork.cast runtimeChan
-                . ManagementEvent
-                . UpdateClusterGoal
-                $ newGoal
-            sleepUntilTime newGoal
-            clusterResizeLoop
-      where
-        sleepUntilTime :: (MonadLoggerIO m) => ClusterGoal -> m ()
-        sleepUntilTime goal = do
-          now <- liftIO getCurrentTime
-          let
-            periodLength :: Int
-            periodLength = cgNumNodes goal * 5
-
-            periodStart :: Int
-            periodStart =
-              periodLength * (truncate (utctDayTime now) `quot` periodLength)
-            
-            offset :: Int
-            offset = (fromIntegral (unPeerOrdinal (rsSelf rts)) - 1) * 5
-
-            firstOffsetAfterCurrentPeriod =
-              addUTCTime (fromIntegral (periodStart + offset)) now {utctDayTime = 0}
-
-            nextTime :: UTCTime
-            nextTime =
-              if firstOffsetAfterCurrentPeriod <= now
-                then
-                  addUTCTime
-                    (fromIntegral periodLength)
-                    firstOffsetAfterCurrentPeriod
-                else
-                  firstOffsetAfterCurrentPeriod
-
-            sleepTime :: Int
-            sleepTime =
-              truncate $
-                (realToFrac (diffUTCTime nextTime now) :: Rational)
-                * 1_000_000
-
-          $(logDebug)
-            $ "Sleeping until " <> showt nextTime
-            <> " (" <> showt sleepTime <> ")."
-            <> showt (now, periodLength, periodStart, offset, firstOffsetAfterCurrentPeriod)
-
-          liftIO (threadDelay sleepTime)
-
-
     runPeerListener :: (MonadLoggerIO m, MonadFail m) => m ()
     runPeerListener =
       let
@@ -578,7 +391,7 @@ executeRuntime
         addy =
           AddressDescription
             (
-              legionPeer (origin (rsClusterState rts)) (rsSelf rts)
+              fromString (unPeer (rsSelf rts))
               <> ":" <> showt peerMessagePort
             )
       in
@@ -609,7 +422,7 @@ executeRuntime
         addy =
           Server.AddressDescription
             (
-              legionPeer (origin (rsClusterState rts)) (rsSelf rts)
+              fromString (unPeer (rsSelf rts))
               <> ":" <> showt joinMessagePort
             )
       in
@@ -674,27 +487,34 @@ handleRuntimeMessage :: (
   => RuntimeMessage e
   -> StateT (RuntimeState e) m ()
 
-handleRuntimeMessage (ManagementEvent e) =
-  updateCluster . void $ event (topEvent e)
+handleRuntimeMessage (GetStats responder) =
+  respond responder =<< gets rsDivergent
 
 handleRuntimeMessage (ApplyFast e responder) =
   updateCluster $
-    fst <$> event (userEvent e) >>= \case
-      Right o -> respond responder o
-      Left o ->
-        $(logError) $ "Impossible event output, dropping response: " <> showt o
+    fst <$> event e >>= respond responder
 
 handleRuntimeMessage (ApplyConsistent e responder) = do
   updateCluster $ do
-    (_v, sid) <- event (userEvent e)
+    (_v, sid) <- event e
     lift (waitOn sid responder)
   rs <- get
   $(logDebug) $ "Waiting: " <> showt (rsWaiting rs)
 
-handleRuntimeMessage (Eject peer) =
-  updateClusterAs peer $ do
-    void $ event (topEvent (Terminated peer))
+handleRuntimeMessage (Eject peer responder) = do
+  updateClusterAs peer $
     void $ disassociate peer
+  propagate
+  {- ↓
+    This is an awful hack. The problem is that 'propagate' uses
+    'sendPeer', but 'sendPeer' itself is asynchronous (though it should be
+    very fast). The correct solution is a bit tricky. We can either figure
+    out some way to block all the way down through the internals of the
+    connection management, or else maybe extend the "join port" server
+    endpoint to accept eject notifications as well as join requests.
+  -}
+  liftIO $ threadDelay 500_000
+  respond responder ()
 
 handleRuntimeMessage (Merge other) =
   updateCluster $
@@ -712,7 +532,6 @@ handleRuntimeMessage (Join (JoinRequest peer) responder) = do
   $(logInfo) $ "Handling join from peer: " <> showt peer
   updateCluster (do
       void $ disassociate peer
-      void $ event (topEvent (CommissionComplete peer))
       void $ participate peer
     )
   RuntimeState {rsClusterState} <- get
@@ -830,7 +649,7 @@ newMessageId = do
 updateCluster :: (
       EventConstraints e, MonadCatch m, MonadLoggerIO m
     )
-  => EventFoldT ClusterName Peer (ClusterEvent e) (StateT (RuntimeState e) m) a
+  => EventFoldT ClusterName Peer e (StateT (RuntimeState e) m) a
   -> StateT (RuntimeState e) m a
 updateCluster action = do
   RuntimeState {rsSelf} <- get
@@ -842,75 +661,49 @@ updateCluster action = do
   peer. This is required for e.g. the peer eject case, when the ejected peer
   may not be able to perform acknowledgements on its own behalf.
 -}
-updateClusterAs :: (
-      EventConstraints e, MonadCatch m, MonadLoggerIO m
-    )
+updateClusterAs
+  :: forall e m a.
+     ( EventConstraints e
+     , MonadCatch m
+     , MonadLoggerIO m
+     )
   => Peer
   -> EventFoldT
        ClusterName
        Peer
-       (ClusterEvent e)
+       e
        (StateT (RuntimeState e) m)
        a
   -> StateT (RuntimeState e) m a
 updateClusterAs asPeer action = do
-  RuntimeState {rsClusterState} <- get
-  (v, ur) <- runEventFoldT asPeer rsClusterState action
+  (cluster, oldDivergent) <- gets (rsClusterState &&& rsDivergent)
+  (v, ur) <- runEventFoldT asPeer cluster action
   liftIO . ($ urEventFold ur) . rsNotify =<< get
-  modify (\state -> state {rsClusterState = urEventFold ur})
-  respondToWaiting (urOutputs ur)
-  kickoffRebalance
-  return v
+  now <- liftIO getTime
+  modify
+    (\state ->
+      let
+        newCluster :: EventFold ClusterName Peer e
+        newCluster = urEventFold ur
 
-kickoffRebalance
-  :: forall m e.
-     ( EventConstraints e
-     , MonadCatch m
-     , MonadLoggerIO m
-     , MonadState (RuntimeState e) m
-     )
-  => m ()
-kickoffRebalance = do
-  ((cluster, appState), (lastOrd, (self, (launch, terminate)))) <-
-    gets (
-      (infimumValue . rsClusterState)
-      &&& rsLastOrd
-      &&& rsSelf
-      &&& rsLaunch
-      &&& rsTerminate
+        newDivergent :: Map Peer (EventId Peer, TimeSpec)
+        newDivergent =
+          Map.differenceWith
+            (\new@(newEid, _) old@(oldEid, _) ->
+              if newEid > oldEid
+                then Just new
+                else Just old
+            )
+            ((,now) <$> divergent newCluster)
+            oldDivergent
+      in
+        state
+          { rsClusterState = newCluster
+          , rsDivergent = newDivergent
+          }
     )
-  $(logDebug)
-    $ "Kicking off rebalance: " <> showt (lastOrd, cOrd cluster, cPlan cluster)
-  when (lastOrd < cOrd cluster) $
-    case cPlan cluster of
-      [] -> pure ()
-      Decommission peer : _
-        | peer == self && allowDecommission (Proxy @e) peer appState -> do
-            modify (\rs ->
-                rs {
-                  rsClusterState =
-                    let
-                      (_, ur) =
-                        runIdentity . runEventFoldT self (rsClusterState rs) $ do
-                          void $ event (topEvent (Terminated self))
-                          disassociate self
-                    in
-                      urEventFold ur
-                }
-              )
-            propagate
-            $(logDebug) "About to terminate"
-            liftIO terminate
-        | otherwise -> pure ()
-      Commission peer : _ -> do
-        $(logDebug) $ "Launching peer: " <> showt peer
-        logging <- askLoggerIO
-        void . liftIO . async . (`runLoggingT` logging) $ do
-          $(logInfo) "Calling launch."
-          lift (tryAny (launch peer)) >>= \case
-            Left err -> $(logError) $ "Launch failed with: " <> showt (peer, err)
-            Right () -> $(logInfo) $ "Launch of peer complete: " <> showt peer
-        modify (\rs -> rs { rsLastOrd = succ (rsLastOrd rs)})
+  respondToWaiting (urOutputs ur)
+  return v
 
 
 {- | Wait on a consistent response for the given state id. -}
@@ -933,60 +726,22 @@ propagate
      )
   => m ()
 propagate = do
-    (self, (cluster, (checkSid, checkTime))) <-
-      gets
-        (
-          rsSelf
-          &&& rsClusterState
-          &&& rsCheckpointSid
-          &&& rsCheckpointTime
-        )
+    (self, cluster) <- gets (rsSelf &&& rsClusterState)
     let
       targets = Set.delete self $
         EF.allParticipants cluster
 
-    now <- liftIO getCurrentTime
-    let
-      isDivergent :: Bool
-      isDivergent = not (Map.null (divergent cluster))
-
     liftIO (shuffleM (Set.toList targets)) >>= \case
       [] -> return ()
       target:_ ->
-        {-
-          If it has been more than 10 seconds since progress on the
-          infimum was made, try sending out a full merge instead of just
-          the event pack.
-        -}
-        if isDivergent
-           && infimumId cluster == checkSid
-           && diffUTCTime now checkTime > 10
-        then do
-          $(logWarn)
-            $ "Sending full merge because no progress has been "
-            <> "made on the cluster state."
-          sendPeer (PMFullMerge cluster) target
-          modify (\rs -> rs {rsCheckpointTime = now})
-        else 
-          if target `member` infimumParticipants cluster
-            then
-              sendPeer (PMMerge (events target cluster)) target
-            else do
-              $(logInfo)
-                $ "Sending full merge because the target's join event "
-                <> "has not reaached the infimum"
-              sendPeer (PMFullMerge cluster) target
-    modify (\rs -> rs {
-        rsCheckpointSid = infimumId cluster,
-        rsCheckpointTime =
-          {-
-            Don't advance the checkpoint time unless the infimum has
-            also advanced.
-          -}
-          if infimumId cluster == checkSid && isDivergent
-            then rsCheckpointTime rs
-            else now
-      })
+        if target `member` infimumParticipants cluster
+          then
+            sendPeer (PMMerge (events target cluster)) target
+          else do
+            $(logInfo)
+              $ "Sending full merge because the target's join event "
+              <> "has not reaached the infimum"
+            sendPeer (PMFullMerge cluster) target
     disconnectObsolete
   where
     {- |
@@ -1006,137 +761,12 @@ propagate = do
       mapM_ disconnect obsolete
 
 
-{- | Send a peer message, creating a new connection if need be. -}
-sendPeer
-  :: ( EventConstraints e
-     , MonadCatch m
-     , MonadLoggerIO m
-     , MonadState (RuntimeState e) m
-     )
-  => PeerMessage e
-  -> Peer
-  -> m ()
-sendPeer msg peer = do
-  state@RuntimeState {rsConnections} <- get
-  case Map.lookup peer rsConnections of
-    Nothing -> do
-      conn <- createConnection peer
-      put state {rsConnections = Map.insert peer conn rsConnections}
-      sendPeer msg peer
-    Just conn -> do
-      rs <- get
-      (liftIO . tryAny) (runStateT (conn msg) rs) >>= \case
-        Left err -> do
-          $(logWarn) $ "Failure sending to peer: " <> showt (peer, err)
-          disconnect peer
-        Right ((), rs2) -> do
-          put rs2
-          $(logDebug) $ "Sent message to peer: " <> showt (peer, msg)
-          return ()
-
-
-{- | Disconnect the connection to a peer. -}
-disconnect
-  :: ( MonadLogger m
-     , MonadState (RuntimeState e) m
-     )
-  => Peer
-  -> m ()
-disconnect peer = do
-  $(logInfo) $ "Disconnecting: " <> showt peer
-  modify (\state@RuntimeState {rsConnections} -> state {
-    rsConnections = Map.delete peer rsConnections
-  })
-
-
-{- | Create a connection to a peer. -}
-createConnection
-  :: ( EventConstraints e
-     , MonadCatch m
-     , MonadIO w
-     , MonadLoggerIO m
-     , MonadState (RuntimeState e) m
-     , MonadState (RuntimeState e) w
-     )
-  => Peer
-  -> m (PeerMessage e -> w ())
-createConnection peer = do
-    $(logInfo) $ "Creating connection to: " <> showt peer
-    rts@RuntimeState {rsSelf} <- get
-    latest <- liftIO $ atomically (newTVar (Just []))
-    logging <- askLoggerIO
-    liftIO . void . async . (`runLoggingT` logging) $
-      let
-        addy :: AddressDescription
-        addy =
-          AddressDescription
-            (
-              legionPeer (origin (rsClusterState rts)) peer
-              <> ":" <> showt peerMessagePort
-            )
-      in
-        finally 
-          (
-            (tryAny . runConduit) (
-              latestSource rsSelf latest .| openEgress addy
-            ) >>= \case
-              Left err -> $(logInfo) $ "Disconnecting because of error: " <> showt err
-              Right () -> $(logInfo) "Disconnecting because source dried up."
-          )
-          (liftIO $ atomically (writeTVar latest Nothing))
-      
-    return (\msg ->
-        join . liftIO . atomically $
-          readTVar latest >>= \case
-            Nothing ->
-              (pure . (`runLoggingT` logging) . disconnect) peer
-            Just msgs -> do
-              writeTVar latest (
-                  Just $ case msg of
-                    PMMerge _ ->
-                      msg : filter (\case {PMMerge _ -> False; _ -> True}) msgs
-                    PMFullMerge _ ->
-                      {-
-                        Full merges override both older full merges and
-                        older partial merges.
-                      -}
-                      msg : filter
-                              (\case
-                                PMMerge _ -> False
-                                PMFullMerge _ -> False
-                                _ -> True
-                              )
-                              msgs
-                    _ -> msgs ++ [msg] 
-                )
-              return (return ())
-      )
-  where
-    latestSource :: (MonadIO m)
-      => Peer
-      -> TVar (Maybe [PeerMessage e])
-      -> ConduitT void (Peer, PeerMessage e) m ()
-    latestSource self_ latest =
-      (liftIO . atomically) (
-        readTVar latest >>= \case
-          Nothing -> return Nothing
-          Just [] -> retry
-          Just messages -> do
-            writeTVar latest (Just [])
-            return (Just messages)
-      ) >>= \case
-        Nothing -> return ()
-        Just messages -> do
-          mapM_ (yield . (self_,)) messages
-          latestSource self_ latest
-
-
 {- |
   Respond to event applications that are waiting on a consistent result,
   if such a result is available.
 -}
 respondToWaiting :: (MonadLoggerIO m, Show (Output e))
-  => Map (EventId Peer) (Output (ClusterEvent e))
+  => Map (EventId Peer) (Output e)
   -> StateT (RuntimeState e) m ()
 respondToWaiting available = do
     rs <- get
@@ -1144,21 +774,16 @@ respondToWaiting available = do
       $ "Responding to: " <> showt (available, Map.keysSet (rsWaiting rs))
     mapM_ respondToOne (Map.toList available)
   where
-    respondToOne :: (Show (Output (ClusterEvent e)), MonadLoggerIO m)
-      => (EventId Peer, Output (ClusterEvent e))
+    respondToOne
+      :: (MonadIO m)
+      => (EventId Peer, Output e)
       -> StateT (RuntimeState e) m ()
     respondToOne (sid, output) = do
       state@RuntimeState {rsWaiting} <- get
       case Map.lookup sid rsWaiting of
         Nothing -> return ()
         Just responder -> do
-          case output of
-            Left _ ->
-              $(logError)
-                $ "Impossible event output, dropping response: "
-                <> showt output
-            Right o ->
-              respond responder o
+          respond responder output
           put state {rsWaiting = Map.delete sid rsWaiting}
 
 
@@ -1167,7 +792,6 @@ data StartupMode e
   {- | Indicates that we should bootstrap a new cluster at startup. -}
   = NewCluster
       Peer {- ^ The peer being launched. -}
-      ClusterGoal {- ^ The inital cluster size goal. -}
       ClusterName {- ^ The name of the cluster being launched. -}
 
   {- | Indicates that the node should try to join an existing cluster. -}
@@ -1179,7 +803,7 @@ data StartupMode e
   {- | Resume operation given the previously saved state. -}
   | Recover
       Peer {- ^ The Peer being recovered. -}
-      (EventFold ClusterName Peer (ClusterEvent e))
+      (EventFold ClusterName Peer e)
       {- ^ The last acknowledged state we had before we crashed. -}
 deriving stock instance
     ( Show e
@@ -1192,39 +816,24 @@ deriving stock instance
 
 {- | Initialize the runtime state. -}
 makeRuntimeState :: (EventConstraints e, MonadLoggerIO m)
-  => (Peer -> EventFold ClusterName Peer (ClusterEvent e) -> IO ())
+  => (Peer -> EventFold ClusterName Peer e -> IO ())
      {- ^ Callback when the cluster-wide powerstate changes. -}
   -> StartupMode e
-  -> (Peer -> IO ()) {- ^ Launch a peer -}
-  -> (forall v. IO v) {- ^ kill ourself -}
   -> m (RuntimeState e)
 
 makeRuntimeState
     notify
-    (NewCluster self goal clusterId)
-    launch
-    terminate
-  =
+    (NewCluster self clusterId)
+  = do
+    $(logInfo) "Starting a new cluster."
     {- Build a brand new node state, for the first node in a cluster. -}
-    let
-      (_, ur) =
-        runIdentity $
-          runEventFoldT self (EF.new clusterId self) (do
-            void $ event (topEvent (UpdateClusterGoal goal))
-            void $ event (topEvent (CommissionComplete self))
-          )
-    in
-      makeRuntimeState
-        notify
-        (Recover self (urEventFold ur))
-        launch
-        terminate
+    makeRuntimeState
+      notify
+      (Recover self (EF.new clusterId self))
 
 makeRuntimeState
     notify
-    (JoinCluster self clusterName targetPeer)
-    launch
-    terminate
+    (JoinCluster self _clusterName targetPeer)
   = do
     {- Join a cluster an existing cluster. -}
     $(logInfo) $ "Trying to join an existing cluster on " <> showt addr
@@ -1233,7 +842,7 @@ makeRuntimeState
       . JoinRequest
       $ self
     $(logInfo) $ "Join response with cluster: " <> showt cluster
-    makeRuntimeState notify (Recover self cluster) launch terminate
+    makeRuntimeState notify (Recover self cluster)
   where
     requestJoin :: (EventConstraints e, MonadLoggerIO m)
       => JoinRequest
@@ -1242,52 +851,33 @@ makeRuntimeState
 
     addr :: Server.AddressDescription
     addr =
-      legionPeer clusterName targetPeer
+      fromString (unPeer targetPeer)
       <> ":" <> showt joinMessagePort
 
 makeRuntimeState
     notify
     (Recover self clusterState)
-    launch
-    terminate
   = do
-    now <- liftIO getCurrentTime
     rsNextId <- newSequence
-    return RuntimeState {
-        rsSelf = self,
-        rsClusterState = clusterState,
-        rsConnections = mempty,
-        rsWaiting = mempty,
-        rsCalls = mempty,
-        rsBroadcalls = mempty,
-        rsNextId,
-        rsNotify = notify self,
-        rsJoins = mempty,
-        rsCheckpointTime = now,
-        rsCheckpointSid = infimumId clusterState,
-        rsLastOrd = minBound,
-        rsLaunch = launch,
-        rsTerminate = terminate
-      }
+    return
+      RuntimeState
+        { rsSelf = self
+        , rsClusterState = clusterState
+        , rsConnections = mempty
+        , rsWaiting = mempty
+        , rsCalls = mempty
+        , rsBroadcalls = mempty
+        , rsNextId
+        , rsNotify = notify self
+        , rsJoins = mempty
+        , rsDivergent = mempty
+        }
 
 
 {- | This is the type of a join request message. -}
 newtype JoinRequest = JoinRequest Peer
   deriving stock (Generic, Show)
 instance Binary JoinRequest
-
-
-{- | The response to a JoinRequest message -}
-newtype JoinResponse e
-  = JoinOk (EventFold ClusterName Peer (ClusterEvent e))
-  deriving stock (Generic)
-deriving stock instance (EventConstraints e) => Show (JoinResponse e)
-instance (EventConstraints e) => Binary (JoinResponse e)
-
-
-{- | Message Identifier. -}
-data MessageId = M UUID Word64 deriving stock (Generic, Show, Eq, Ord)
-instance Binary MessageId
 
 
 {- |
@@ -1317,33 +907,9 @@ nextMessageId :: MessageId -> MessageId
 nextMessageId (M sequenceId ord) = M sequenceId (succ ord)
 
 
-{- |
-  Shorthand for all the constraints needed for the event type. Mainly
-  used so that documentation renders better.
--}
-type EventConstraints e =
-  ( Binary (State e)
-  , Binary e
-  , Default (State e)
-  , Eq e
-  , Event e
-  , Show e
-  , Show (State e)
-  , Show (Output e)
-  , Eq (Output e)
-  , Binary (Output e)
-  , TopologySensitive e
-  )
-
-
 {- | Obtain the 'ClusterName'. -}
 getClusterName :: Runtime e -> ClusterName
 getClusterName = rClusterId
-
-
-{- | The peer message port. -}
-peerMessagePort :: PortNumber
-peerMessagePort = 5288
 
 
 {- | The join message port  -}
@@ -1379,32 +945,23 @@ getTime :: (MonadIO m) => m TimeSpec
 getTime = liftIO $ Clock.getTime Clock.Monotonic
 
 
-{- | The name of a cluster. -}
-newtype ClusterName = ClusterName {
-    unClusterName :: Text
-  }
-  deriving newtype (
-    IsString, Show, Binary, Eq, ToJSON, FromJSON, Ord, ToHttpApiData,
-    FromHttpApiData
-  )
+{- |
+  Retrieve some basic stats that can be used to intuit the health of
+  the cluster.
+-}
+getStats :: (MonadIO m) => Runtime e -> m Stats
+getStats runtime = do
+  divergent_ <- Fork.call runtime GetStats
+  now <- liftIO getTime
+  pure
+    Stats
+      { timeWithoutProgress = diffTime now . snd <$> divergent_
+      }
 
 
--- {- |
---   Property that ensures anything produced by `legionPeer` can be parsed by
---   `parseLegionPeer`.
--- -}
--- prop_parseLegionPeer :: Property
--- prop_parseLegionPeer =
---   let
---     values = do
---       name <- ClusterName . T.pack <$> arbitrary
---       ord <- PeerOrdinal . fromInteger <$> choose (0, 99)
---       let nodeName = legionPeer name ord
---       return $
---         if Just (name, ord) == parseLegionPeer nodeName
---           then Nothing
---           else Just $ "Failed on: " <> show nodeName
---   in
---     forAll values (== Nothing)
+{- | Take the difference of two time specs. -}
+diffTime :: TimeSpec -> TimeSpec -> DiffTime
+diffTime a b =
+  realToFrac (Clock.toNanoSecs (Clock.diffTimeSpec a b)) / 1_000_000_000
 
 
