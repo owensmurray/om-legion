@@ -85,8 +85,7 @@ import Data.Map (Map)
 import Data.Set ((\\), Set, member)
 import Data.String (IsString, fromString)
 import Data.Text (Text)
-import Data.Time (DiffTime, UTCTime, diffTimeToPicoseconds, diffUTCTime,
-  getCurrentTime, picosecondsToDiffTime)
+import Data.Time (DiffTime, diffTimeToPicoseconds, picosecondsToDiffTime)
 import Data.UUID (UUID)
 import Data.UUID.V1 (nextUUID)
 import GHC.Generics (Generic)
@@ -113,40 +112,38 @@ import qualified System.Clock as Clock
 
 {- | The Legionary runtime state. -}
 data RuntimeState e = RuntimeState
-  {           rsSelf :: Peer
-  ,   rsClusterState :: EventFold ClusterName Peer e
-  ,    rsConnections :: Map
-                          Peer
-                          (PeerMessage e -> StateT (RuntimeState e) IO ())
-  ,        rsWaiting :: Map (EventId Peer) (Responder (Output e))
-  ,          rsCalls :: Map MessageId (Responder ByteString)
-  ,     rsBroadcalls :: Map
-                          MessageId
-                          (
-                            Map Peer (Maybe ByteString),
-                            Responder (Map Peer (Maybe ByteString)),
-                            TimeSpec
-                          )
-  ,         rsNextId :: MessageId
-  ,         rsNotify :: EventFold ClusterName Peer e -> IO ()
-  ,          rsJoins :: Map
-                          (EventId Peer)
-                          (Responder (JoinResponse e))
-                        {- ^
-                          The infimum of the eventfold we send to a
-                          new participant must have moved past the
-                          participation event itself. In other words,
-                          the join must be totally consistent across the
-                          cluster. The reason is that we can't make the
-                          new participant responsible for applying events
-                          that occur before it joined the cluster, because
-                          it has no way to ensure that it can collect all
-                          such events.  Therefore, this field tracks the
-                          outstanding joins until they become consistent.
-                        -}
-  ,  rsCheckpointSid :: EventId Peer
-  , rsCheckpointTime :: UTCTime
-  ,      rsDivergent :: Map Peer (EventId Peer, TimeSpec)
+  {         rsSelf :: Peer
+  , rsClusterState :: EventFold ClusterName Peer e
+  ,  rsConnections :: Map
+                        Peer
+                        (PeerMessage e -> StateT (RuntimeState e) IO ())
+  ,      rsWaiting :: Map (EventId Peer) (Responder (Output e))
+  ,        rsCalls :: Map MessageId (Responder ByteString)
+  ,   rsBroadcalls :: Map
+                        MessageId
+                        (
+                          Map Peer (Maybe ByteString),
+                          Responder (Map Peer (Maybe ByteString)),
+                          TimeSpec
+                        )
+  ,       rsNextId :: MessageId
+  ,       rsNotify :: EventFold ClusterName Peer e -> IO ()
+  ,        rsJoins :: Map
+                        (EventId Peer)
+                        (Responder (JoinResponse e))
+                      {- ^
+                        The infimum of the eventfold we send to a
+                        new participant must have moved past the
+                        participation event itself. In other words,
+                        the join must be totally consistent across the
+                        cluster. The reason is that we can't make the
+                        new participant responsible for applying events
+                        that occur before it joined the cluster, because
+                        it has no way to ensure that it can collect all
+                        such events.  Therefore, this field tracks the
+                        outstanding joins until they become consistent.
+                      -}
+  ,    rsDivergent :: Map Peer (EventId Peer, TimeSpec)
   }
 
 
@@ -784,60 +781,22 @@ propagate
      )
   => m ()
 propagate = do
-    (self, (cluster, (checkSid, checkTime))) <-
-      gets
-        (
-          rsSelf
-          &&& rsClusterState
-          &&& rsCheckpointSid
-          &&& rsCheckpointTime
-        )
+    (self, cluster) <- gets (rsSelf &&& rsClusterState)
     let
       targets = Set.delete self $
         EF.allParticipants cluster
 
-    now <- liftIO getCurrentTime
-    let
-      isDivergent :: Bool
-      isDivergent = not (Map.null (divergent cluster))
-
     liftIO (shuffleM (Set.toList targets)) >>= \case
       [] -> return ()
       target:_ ->
-        {-
-          If it has been more than 10 seconds since progress on the
-          infimum was made, try sending out a full merge instead of just
-          the event pack.
-        -}
-        if isDivergent
-           && infimumId cluster == checkSid
-           && diffUTCTime now checkTime > 10
-        then do
-          $(logWarn)
-            $ "Sending full merge because no progress has been "
-            <> "made on the cluster state."
-          sendPeer (PMFullMerge cluster) target
-          modify (\rs -> rs {rsCheckpointTime = now})
-        else 
-          if target `member` infimumParticipants cluster
-            then
-              sendPeer (PMMerge (events target cluster)) target
-            else do
-              $(logInfo)
-                $ "Sending full merge because the target's join event "
-                <> "has not reaached the infimum"
-              sendPeer (PMFullMerge cluster) target
-    modify (\rs -> rs {
-        rsCheckpointSid = infimumId cluster,
-        rsCheckpointTime =
-          {-
-            Don't advance the checkpoint time unless the infimum has
-            also advanced.
-          -}
-          if infimumId cluster == checkSid && isDivergent
-            then rsCheckpointTime rs
-            else now
-      })
+        if target `member` infimumParticipants cluster
+          then
+            sendPeer (PMMerge (events target cluster)) target
+          else do
+            $(logInfo)
+              $ "Sending full merge because the target's join event "
+              <> "has not reaached the infimum"
+            sendPeer (PMFullMerge cluster) target
     disconnectObsolete
   where
     {- |
@@ -1078,7 +1037,6 @@ makeRuntimeState
     notify
     (Recover self clusterState)
   = do
-    now <- liftIO getCurrentTime
     rsNextId <- newSequence
     return
       RuntimeState
@@ -1091,8 +1049,6 @@ makeRuntimeState
         , rsNextId
         , rsNotify = notify self
         , rsJoins = mempty
-        , rsCheckpointTime = now
-        , rsCheckpointSid = infimumId clusterState
         , rsDivergent = mempty
         }
 
