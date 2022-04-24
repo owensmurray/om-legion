@@ -1015,7 +1015,8 @@ makeRuntimeState :: (EventConstraints e, MonadLoggerIO m)
 makeRuntimeState
     notify
     (NewCluster self clusterId)
-  =
+  = do
+    $(logInfo) "Starting a new cluster."
     {- Build a brand new node state, for the first node in a cluster. -}
     makeRuntimeState
       notify
