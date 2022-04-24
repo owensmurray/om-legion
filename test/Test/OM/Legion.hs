@@ -3,6 +3,7 @@
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeApplications #-}
@@ -68,7 +69,7 @@ data Op
   | Get
   deriving stock (Eq, Generic, Show, Read)
   deriving anyclass (Binary, ToJSON)
-instance Event Op where
+instance Event Peer Op where
   type Output Op = (S, S)
   type State Op = S
 

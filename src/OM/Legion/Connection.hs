@@ -128,7 +128,7 @@ type EventConstraints e =
   , Binary e
   , Default (State e)
   , Eq e
-  , Event e
+  , Event Peer e
   , Show e
   , Show (State e)
   , Show (Output e)

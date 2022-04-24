@@ -331,7 +331,7 @@ executeRuntime
      , Default (State e)
      , Eq (Output e)
      , Eq e
-     , Event e
+     , Event Peer e
      , MonadCatch m
      , MonadFail m
      , MonadLoggerIO m
