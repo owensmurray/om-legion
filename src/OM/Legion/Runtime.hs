@@ -24,14 +24,8 @@ module OM.Legion.Runtime (
   forkLegionary,
   Runtime,
   StartupMode(..),
+
   -- * Constraints
-  {- |
-    These are the constraints that need to be met in order to run a Legion
-    program. 'EventConstraints' and 'MonadConstraints' are provided as
-    shorthand for a longer list of constraints mainly because Haddocks
-    doesn't do a great job of rendering when then constraint list is long.
-  -}
-  EventConstraints,
   MonadConstraints,
 
   -- * Runtime Interface.
@@ -47,105 +41,68 @@ module OM.Legion.Runtime (
   getClusterName,
   getStats,
   Stats(..),
-
-  -- * Cluster Topology
-  ClusterName(..),
-  Peer(..),
 ) where
 
 
 import Control.Arrow ((&&&))
 import Control.Concurrent (Chan, newChan, readChan, threadDelay,
   writeChan)
-import Control.Concurrent.Async (async)
-import Control.Concurrent.STM (TVar, atomically, newTVar, readTVar,
-  retry, writeTVar)
-import Control.Exception.Safe (MonadCatch, finally, tryAny)
-import Control.Monad (join, unless, void, when)
+import Control.Exception.Safe (MonadCatch, tryAny)
+import Control.Monad (unless, void, when)
 import Control.Monad.IO.Class (MonadIO(liftIO))
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Logger (LoggingT(runLoggingT),
   MonadLoggerIO(askLoggerIO), LogStr, MonadLogger, logDebug, logError,
-  logInfo, logWarn)
-import Control.Monad.State (MonadState, StateT, evalStateT, get, gets,
-  modify, put, runStateT)
+  logInfo)
+import Control.Monad.State (MonadState(get, put), StateT, evalStateT,
+  gets, modify)
 import Control.Monad.Trans.Class (lift)
-import Data.Aeson (FromJSON, FromJSONKey, ToJSON, ToJSONKey)
-import Data.Binary (Binary, Word64)
+import Data.Aeson (ToJSON)
+import Data.Binary (Binary)
 import Data.ByteString.Lazy (ByteString)
 import Data.CRDT.EventFold (Event(Output, State),
   UpdateResult(urEventFold, urOutputs), Diff, EventFold, EventId,
   divergent, events, infimumId, infimumParticipants, projParticipants)
 import Data.CRDT.EventFold.Monad (MonadUpdateEF(diffMerge, disassociate,
   event, fullMerge, participate), EventFoldT, runEventFoldT)
-import Data.Conduit ((.|), ConduitT, awaitForever, runConduit, yield)
+import Data.Conduit ((.|), awaitForever, runConduit, yield)
 import Data.Default.Class (Default)
 import Data.Int (Int64)
 import Data.Map (Map)
 import Data.Set ((\\), Set, member)
-import Data.String (IsString, fromString)
-import Data.Text (Text)
+import Data.String (IsString(fromString))
 import Data.Time (DiffTime, diffTimeToPicoseconds, picosecondsToDiffTime)
 import Data.UUID (UUID)
 import Data.UUID.V1 (nextUUID)
 import GHC.Generics (Generic)
-import Network.Socket (HostName, PortNumber)
+import Network.Socket (PortNumber)
 import OM.Fork (Actor(Msg, actorChan), Race, Responder, race)
 import OM.Legion.Conduit (chanToSink)
+import OM.Legion.Connection (JoinResponse(JoinOk),
+  RuntimeState(RuntimeState, rsBroadcalls, rsCalls, rsClusterState,
+  rsConnections, rsDivergent, rsJoins, rsNextId, rsNotify, rsSelf,
+  rsWaiting), EventConstraints, disconnect, peerMessagePort, sendPeer)
+import OM.Legion.MsgChan (MessageId(M), Peer(unPeer), PeerMessage(PMCall,
+  PMCallResponse, PMCast, PMFullMerge, PMMerge), ClusterName)
 import OM.Logging (withPrefix)
 import OM.Show (showt)
 import OM.Socket (AddressDescription(AddressDescription),
-  Endpoint(Endpoint), openEgress, openIngress)
+  Endpoint(Endpoint), openIngress)
 import OM.Socket.Server (connectServer, openServer)
 import System.Clock (TimeSpec)
 import System.Random.Shuffle (shuffleM)
-import Web.HttpApiData (FromHttpApiData, ToHttpApiData)
-import qualified Data.Binary as Binary
-import qualified Data.CRDT.EventFold as EF
-import qualified Data.Map as Map
-import qualified Data.Set as Set
-import qualified OM.Fork as Fork
+import qualified Data.Binary as Binary (Binary(get, put))
+import qualified Data.CRDT.EventFold as EF (allParticipants, new, origin)
+import qualified Data.Map as Map (delete, differenceWith, fromList,
+  insert, keysSet, lookup, partitionWithKey, toList)
+import qualified Data.Set as Set (delete, null, toList)
+import qualified OM.Fork as Fork (call, cast, respond)
 import qualified OM.Socket.Server as Server
-import qualified System.Clock as Clock
+  (AddressDescription(AddressDescription), Endpoint(Endpoint))
+import qualified System.Clock as Clock (Clock(Monotonic),
+  TimeSpec(TimeSpec, nsec, sec), diffTimeSpec, getTime, toNanoSecs)
 
 {-# ANN module ("HLint: ignore Redundant <$>" :: String) #-}
-
-{- | The Legionary runtime state. -}
-data RuntimeState e = RuntimeState
-  {         rsSelf :: Peer
-  , rsClusterState :: EventFold ClusterName Peer e
-  ,  rsConnections :: Map
-                        Peer
-                        (PeerMessage e -> StateT (RuntimeState e) IO ())
-  ,      rsWaiting :: Map (EventId Peer) (Responder (Output e))
-  ,        rsCalls :: Map MessageId (Responder ByteString)
-  ,   rsBroadcalls :: Map
-                        MessageId
-                        (
-                          Map Peer (Maybe ByteString),
-                          Responder (Map Peer (Maybe ByteString)),
-                          TimeSpec
-                        )
-  ,       rsNextId :: MessageId
-  ,       rsNotify :: EventFold ClusterName Peer e -> IO ()
-  ,        rsJoins :: Map
-                        (EventId Peer)
-                        (Responder (JoinResponse e))
-                      {- ^
-                        The infimum of the eventfold we send to a
-                        new participant must have moved past the
-                        participation event itself. In other words,
-                        the join must be totally consistent across the
-                        cluster. The reason is that we can't make the
-                        new participant responsible for applying events
-                        that occur before it joined the cluster, because
-                        it has no way to ensure that it can collect all
-                        such events.  Therefore, this field tracks the
-                        outstanding joins until they become consistent.
-                      -}
-  ,    rsDivergent :: Map Peer (EventId Peer, TimeSpec)
-  }
-
 
 {- |
   Shorthand for all the monad constraints, mainly use so that
@@ -360,29 +317,6 @@ deriving stock instance
     )
   =>
     Show (RuntimeMessage e)
-
-
-{- | The types of messages that can be sent from one peer to another. -}
-data PeerMessage e
-  = PMMerge (Diff ClusterName Peer e)
-    {- ^ Send a powerstate merge. -}
-  | PMFullMerge (EventFold ClusterName Peer e)
-    {- ^ Send a full merge. -}
-  | PMCall Peer MessageId ByteString
-    {- ^ Send a user call message from one peer to another. -}
-  | PMCast ByteString
-    {- ^ Send a user cast message from one peer to another. -}
-  | PMCallResponse Peer MessageId ByteString
-    {- ^ Send a response to a user call message. -}
-  deriving stock (Generic)
-deriving stock instance
-    ( Show e
-    , Show (Output e)
-    , Show (State e)
-    )
-  =>
-    Show (PeerMessage e)
-instance (Binary e, Binary (Output e), Binary (State e)) => Binary (PeerMessage e)
 
 
 {- |
@@ -827,131 +761,6 @@ propagate = do
       mapM_ disconnect obsolete
 
 
-{- | Send a peer message, creating a new connection if need be. -}
-sendPeer
-  :: ( EventConstraints e
-     , MonadCatch m
-     , MonadLoggerIO m
-     , MonadState (RuntimeState e) m
-     )
-  => PeerMessage e
-  -> Peer
-  -> m ()
-sendPeer msg peer = do
-  state@RuntimeState {rsConnections} <- get
-  case Map.lookup peer rsConnections of
-    Nothing -> do
-      conn <- createConnection peer
-      put state {rsConnections = Map.insert peer conn rsConnections}
-      sendPeer msg peer
-    Just conn -> do
-      rs <- get
-      (liftIO . tryAny) (runStateT (conn msg) rs) >>= \case
-        Left err -> do
-          $(logWarn) $ "Failure sending to peer: " <> showt (peer, err)
-          disconnect peer
-        Right ((), rs2) -> do
-          put rs2
-          $(logDebug) $ "Sent message to peer: " <> showt (peer, msg)
-          return ()
-
-
-{- | Disconnect the connection to a peer. -}
-disconnect
-  :: ( MonadLogger m
-     , MonadState (RuntimeState e) m
-     )
-  => Peer
-  -> m ()
-disconnect peer = do
-  $(logInfo) $ "Disconnecting: " <> showt peer
-  modify (\state@RuntimeState {rsConnections} -> state {
-    rsConnections = Map.delete peer rsConnections
-  })
-
-
-{- | Create a connection to a peer. -}
-createConnection
-  :: ( EventConstraints e
-     , MonadCatch m
-     , MonadIO w
-     , MonadLoggerIO m
-     , MonadState (RuntimeState e) m
-     , MonadState (RuntimeState e) w
-     )
-  => Peer
-  -> m (PeerMessage e -> w ())
-createConnection peer = do
-    $(logInfo) $ "Creating connection to: " <> showt peer
-    RuntimeState {rsSelf} <- get
-    latest <- liftIO $ atomically (newTVar (Just []))
-    logging <- askLoggerIO
-    liftIO . void . async . (`runLoggingT` logging) $
-      let
-        addy :: AddressDescription
-        addy =
-          AddressDescription
-            (
-              fromString (unPeer peer)
-              <> ":" <> showt peerMessagePort
-            )
-      in
-        finally 
-          (
-            (tryAny . runConduit) (
-              latestSource rsSelf latest .| openEgress addy
-            ) >>= \case
-              Left err -> $(logInfo) $ "Disconnecting because of error: " <> showt err
-              Right () -> $(logInfo) "Disconnecting because source dried up."
-          )
-          (liftIO $ atomically (writeTVar latest Nothing))
-      
-    return (\msg ->
-        join . liftIO . atomically $
-          readTVar latest >>= \case
-            Nothing ->
-              (pure . (`runLoggingT` logging) . disconnect) peer
-            Just msgs -> do
-              writeTVar latest (
-                  Just $ case msg of
-                    PMMerge _ ->
-                      msg : filter (\case {PMMerge _ -> False; _ -> True}) msgs
-                    PMFullMerge _ ->
-                      {-
-                        Full merges override both older full merges and
-                        older partial merges.
-                      -}
-                      msg : filter
-                              (\case
-                                PMMerge _ -> False
-                                PMFullMerge _ -> False
-                                _ -> True
-                              )
-                              msgs
-                    _ -> msgs ++ [msg] 
-                )
-              return (return ())
-      )
-  where
-    latestSource :: (MonadIO m)
-      => Peer
-      -> TVar (Maybe [PeerMessage e])
-      -> ConduitT void (Peer, PeerMessage e) m ()
-    latestSource self_ latest =
-      (liftIO . atomically) (
-        readTVar latest >>= \case
-          Nothing -> return Nothing
-          Just [] -> retry
-          Just messages -> do
-            writeTVar latest (Just [])
-            return (Just messages)
-      ) >>= \case
-        Nothing -> return ()
-        Just messages -> do
-          mapM_ (yield . (self_,)) messages
-          latestSource self_ latest
-
-
 {- |
   Respond to event applications that are waiting on a consistent result,
   if such a result is available.
@@ -1071,19 +880,6 @@ newtype JoinRequest = JoinRequest Peer
 instance Binary JoinRequest
 
 
-{- | The response to a JoinRequest message -}
-newtype JoinResponse e
-  = JoinOk (EventFold ClusterName Peer e)
-  deriving stock (Generic)
-deriving stock instance (EventConstraints e) => Show (JoinResponse e)
-instance (EventConstraints e) => Binary (JoinResponse e)
-
-
-{- | Message Identifier. -}
-data MessageId = M UUID Word64 deriving stock (Generic, Show, Eq, Ord)
-instance Binary MessageId
-
-
 {- |
   Initialize a new sequence of messageIds. It would be perfectly fine to ensure
   unique message ids by generating a unique UUID for each one, but generating
@@ -1111,32 +907,9 @@ nextMessageId :: MessageId -> MessageId
 nextMessageId (M sequenceId ord) = M sequenceId (succ ord)
 
 
-{- |
-  Shorthand for all the constraints needed for the event type. Mainly
-  used so that documentation renders better.
--}
-type EventConstraints e =
-  ( Binary (State e)
-  , Binary e
-  , Default (State e)
-  , Eq e
-  , Event e
-  , Show e
-  , Show (State e)
-  , Show (Output e)
-  , Eq (Output e)
-  , Binary (Output e)
-  )
-
-
 {- | Obtain the 'ClusterName'. -}
 getClusterName :: Runtime e -> ClusterName
 getClusterName = rClusterId
-
-
-{- | The peer message port. -}
-peerMessagePort :: PortNumber
-peerMessagePort = 5288
 
 
 {- | The join message port  -}
@@ -1170,26 +943,6 @@ addTime diff time =
 {- | Specialized 'Clock.getTime'. -}
 getTime :: (MonadIO m) => m TimeSpec
 getTime = liftIO $ Clock.getTime Clock.Monotonic
-
-
-{- | The name of a cluster. -}
-newtype ClusterName = ClusterName {
-    unClusterName :: Text
-  }
-  deriving newtype (
-    IsString, Show, Binary, Eq, ToJSON, FromJSON, Ord, ToHttpApiData,
-    FromHttpApiData
-  )
-
-
-{- | The identification of a node within the legion cluster. -}
-newtype Peer = Peer {
-    unPeer :: HostName
-  }
-  deriving newtype (
-    Eq, Ord, Show, ToJSON, Binary, ToJSONKey, FromJSON, FromJSONKey,
-    FromHttpApiData, ToHttpApiData
-  )
 
 
 {- |

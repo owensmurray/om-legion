@@ -35,10 +35,12 @@ module OM.Legion (
 ) where
 
 
-import OM.Legion.Runtime (ClusterName(ClusterName, unClusterName),
-  Peer(Peer, unPeer), StartupMode(JoinCluster, NewCluster, Recover),
-  Stats(Stats, timeWithoutProgress), EventConstraints, MonadConstraints,
-  Runtime, applyConsistent, applyFast, broadcall, broadcast, call, cast,
-  eject, forkLegionary, getClusterName, getSelf, getStats, readState)
+import OM.Legion.Connection (EventConstraints)
+import OM.Legion.MsgChan (ClusterName(ClusterName, unClusterName),
+  Peer(Peer, unPeer))
+import OM.Legion.Runtime (StartupMode(JoinCluster, NewCluster, Recover),
+  Stats(Stats, timeWithoutProgress), MonadConstraints, Runtime,
+  applyConsistent, applyFast, broadcall, broadcast, call, cast, eject,
+  forkLegionary, getClusterName, getSelf, getStats, readState)
 
 
