@@ -1,6 +1,6 @@
 cabal-version:       3.0
 name:                om-legion
-version:             6.5.0.0
+version:             6.6.0.0
 synopsis:            Core Legion Framework.
 -- description:         
 homepage:            https://github.com/owensmurray/om-legion
