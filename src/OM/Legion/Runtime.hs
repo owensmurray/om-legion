@@ -85,7 +85,7 @@ import OM.Legion.Connection (JoinResponse(JoinOk),
 import OM.Legion.MsgChan (MessageId(M), Peer(unPeer), PeerMessage(PMCall,
   PMCallResponse, PMCast, PMFullMerge, PMMerge), ClusterName)
 import OM.Logging (withPrefix)
-import OM.Show (showt)
+import OM.Show (showj, showt)
 import OM.Socket (AddressDescription(AddressDescription),
   Endpoint(Endpoint), openIngress)
 import OM.Socket.Server (connectServer, openServer)
@@ -340,6 +340,9 @@ executeRuntime
      , Show (Output e)
      , Show (State e)
      , Show e
+     , ToJSON (Output e)
+     , ToJSON (State e)
+     , ToJSON e
      )
   => (ByteString -> IO ByteString)
      {- ^ Handle a user call request.  -}
@@ -374,7 +377,7 @@ executeRuntime
               handleRuntimeMessage msg
               RuntimeState {rsClusterState = cluster2} <- get
               when (cluster1 /= cluster2) $ do
-                $(logDebug) $ "New Cluster State: " <> showt cluster2
+                $(logDebug) $ "New Cluster State: " <> showj cluster2
                 propagate
               handleBroadcallTimeouts
               handleOutstandingJoins
