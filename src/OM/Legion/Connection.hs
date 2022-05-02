@@ -27,6 +27,7 @@ import Control.Monad.IO.Class (MonadIO(liftIO))
 import Control.Monad.Logger.CallStack (LoggingT(runLoggingT),
   MonadLoggerIO(askLoggerIO), MonadLogger, logDebug, logInfo)
 import Control.Monad.State (MonadState(get), modify)
+import Data.Aeson (ToJSON)
 import Data.Binary (Binary)
 import Data.ByteString.Lazy (ByteString)
 import Data.CRDT.EventFold (Event(Output, State), EventFold, EventId)
@@ -124,16 +125,19 @@ createConnection peer = do
   used so that documentation renders better.
 -}
 type EventConstraints e =
-  ( Binary (State e)
+  ( Binary (Output e)
+  , Binary (State e)
   , Binary e
   , Default (State e)
+  , Eq (Output e)
   , Eq e
   , Event Peer e
-  , Show e
-  , Show (State e)
   , Show (Output e)
-  , Eq (Output e)
-  , Binary (Output e)
+  , Show (State e)
+  , Show e
+  , ToJSON (Output e)
+  , ToJSON (State e)
+  , ToJSON e
   )
 
 
