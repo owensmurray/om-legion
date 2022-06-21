@@ -3,7 +3,7 @@ extra-package-dbs: []
 packages:
   - .
 extra-deps:
-  - http://localhost:4563/package/crdt-event-fold-1.6.0.1.tar.gz
+  - http://localhost:4563/package/crdt-event-fold-1.7.0.0.tar.gz
   - http://localhost:4563/package/om-fork-0.7.1.1.tar.gz
   - http://localhost:4563/package/om-http-0.2.0.1.tar.gz
   - http://localhost:4563/package/om-kubernetes-2.3.0.0.tar.gz
