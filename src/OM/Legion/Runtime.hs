@@ -3,7 +3,6 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
@@ -11,12 +10,9 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
-{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
-{-# LANGUAGE ViewPatterns #-}
 
 {- | The meat of the Legion runtime implementation. -}
 module OM.Legion.Runtime (
@@ -51,7 +47,7 @@ import Control.Exception.Safe (MonadCatch, tryAny)
 import Control.Monad (unless, void, when)
 import Control.Monad.IO.Class (MonadIO(liftIO))
 import Control.Monad.IO.Unlift (MonadUnliftIO)
-import Control.Monad.Logger (LoggingT(runLoggingT),
+import Control.Monad.Logger.CallStack (LoggingT(runLoggingT),
   MonadLoggerIO(askLoggerIO), LogStr, MonadLogger, logDebug, logError,
   logInfo)
 import Control.Monad.State (MonadState(get, put), StateT, evalStateT,
@@ -373,11 +369,11 @@ executeRuntime
             handleMessages = do
               msg <- liftIO $ readChan (unRChan runtimeChan)
               RuntimeState {rsClusterState = cluster1} <- get
-              $(logDebug) $ "Handling: " <> showt msg
+              logDebug $ "Handling: " <> showt msg
               handleRuntimeMessage msg
               RuntimeState {rsClusterState = cluster2} <- get
               when (cluster1 /= cluster2) $ do
-                $(logDebug) $ "New Cluster State: " <> showj cluster2
+                logDebug $ "New Cluster State: " <> showj cluster2
                 propagate
               handleBroadcallTimeouts
               handleOutstandingJoins
@@ -401,14 +397,14 @@ executeRuntime
         runConduit (
           openIngress (Endpoint addy Nothing)
           .| awaitForever (\ (msgSource, msg) -> do
-              $(logDebug) $ "Handling: " <> showt (msgSource :: Peer, msg)
+              logDebug $ "Handling: " <> showt (msgSource :: Peer, msg)
               case msg of
                 PMFullMerge ps -> yield (FullMerge ps)
                 PMMerge ps -> yield (Merge ps)
                 PMCall source mid callMsg ->
                   (liftIO . tryAny) (handleUserCall callMsg) >>= \case
                     Left err ->
-                      $(logError)
+                      logError
                         $ "User call handling failed with: " <> showt err
                     Right v -> sendCallResponse runtimeChan source mid v
                 PMCast castMsg -> liftIO (handleUserCast castMsg)
@@ -461,7 +457,7 @@ handleOutstandingJoins = do
   put state {rsJoins = pending}
   sequence_ [
       do
-        $(logInfo) $ "Completing join (" <> showt sid <> ")."
+        logInfo $ "Completing join (" <> showt sid <> ")."
         respond responder (JoinOk rsClusterState)
       | (sid, responder) <- Map.toList consistent
     ]
@@ -502,7 +498,7 @@ handleRuntimeMessage (ApplyConsistent e responder) = do
     (_v, sid) <- event e
     lift (waitOn sid responder)
   rs <- get
-  $(logDebug) $ "Waiting: " <> showt (rsWaiting rs)
+  logDebug $ "Waiting: " <> showt (rsWaiting rs)
 
 handleRuntimeMessage (Eject peer responder) = do
   updateClusterAs peer $
@@ -522,23 +518,23 @@ handleRuntimeMessage (Eject peer responder) = do
 handleRuntimeMessage (Merge other) =
   updateCluster $
     diffMerge other >>= \case
-      Left err -> $(logError) $ "Bad cluster merge: " <> showt err
+      Left err -> logError $ "Bad cluster merge: " <> showt err
       Right () -> return ()
 
 handleRuntimeMessage (FullMerge other) =
   updateCluster $
     fullMerge other >>= \case
-      Left err -> $(logError) $ "Bad cluster merge: " <> showt err
+      Left err -> logError $ "Bad cluster merge: " <> showt err
       Right () -> return ()
 
 handleRuntimeMessage (Join (JoinRequest peer) responder) = do
-  $(logInfo) $ "Handling join from peer: " <> showt peer
+  logInfo $ "Handling join from peer: " <> showt peer
   updateCluster (do
       void $ disassociate peer
       void $ participate peer
     )
   RuntimeState {rsClusterState} <- get
-  $(logInfo) $ "Join immediately with: " <> showt rsClusterState
+  logInfo $ "Join immediately with: " <> showt rsClusterState
   respond responder (JoinOk rsClusterState)
 
 handleRuntimeMessage (ReadState responder) =
@@ -739,7 +735,7 @@ propagate = do
       target:_ ->
         case events target cluster of
           Nothing -> do
-            $(logInfo)
+            logInfo
               $ "Sending full merge because the target's join event "
               <> "has not reaached the infimum"
             sendPeer (PMFullMerge cluster) target
@@ -760,7 +756,7 @@ propagate = do
       (cluster, conns) <- gets (rsClusterState &&& rsConnections)
       let obsolete = Map.keysSet conns \\ EF.allParticipants cluster
       unless (Set.null obsolete) $
-        $(logInfo) $ "Disconnecting obsolete: " <> showt obsolete
+        logInfo $ "Disconnecting obsolete: " <> showt obsolete
       mapM_ disconnect obsolete
 
 
@@ -773,7 +769,7 @@ respondToWaiting :: (MonadLoggerIO m, Show (Output e))
   -> StateT (RuntimeState e) m ()
 respondToWaiting available = do
     rs <- get
-    $(logDebug)
+    logDebug
       $ "Responding to: " <> showt (available, Map.keysSet (rsWaiting rs))
     mapM_ respondToOne (Map.toList available)
   where
@@ -828,7 +824,7 @@ makeRuntimeState
     notify
     (NewCluster self clusterId)
   = do
-    $(logInfo) "Starting a new cluster."
+    logInfo "Starting a new cluster."
     {- Build a brand new node state, for the first node in a cluster. -}
     makeRuntimeState
       notify
@@ -839,12 +835,12 @@ makeRuntimeState
     (JoinCluster self _clusterName targetPeer)
   = do
     {- Join a cluster an existing cluster. -}
-    $(logInfo) $ "Trying to join an existing cluster on " <> showt addr
+    logInfo $ "Trying to join an existing cluster on " <> showt addr
     JoinOk cluster <-
       requestJoin
       . JoinRequest
       $ self
-    $(logInfo) $ "Join response with cluster: " <> showt cluster
+    logInfo $ "Join response with cluster: " <> showt cluster
     makeRuntimeState notify (Recover self cluster)
   where
     requestJoin :: (EventConstraints e, MonadLoggerIO m)
