@@ -134,6 +134,7 @@ forkLegionary
     notify
     startupMode
   = do
+    logInfo $ "Starting up with the following Mode: " <> showt startupMode
     rts <- makeRuntimeState notify startupMode
     runtimeChan <- RChan <$> liftIO newChan
     logging <- withPrefix (logPrefix (rsSelf rts)) <$> askLoggerIO
