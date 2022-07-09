@@ -676,16 +676,17 @@ updateClusterAs
        a
   -> StateT (RuntimeState e) m a
 updateClusterAs asPeer action = do
-  (cluster, oldDivergent) <- gets (rsClusterState &&& rsDivergent)
-  (v, ur) <- runEventFoldT asPeer cluster action
-  liftIO . ($ urEventFold ur) . rsNotify =<< get
+  (oldCluster, (oldDivergent, notify))
+    <- gets (rsClusterState &&& rsDivergent &&& rsNotify)
+  (v, ur) <- runEventFoldT asPeer oldCluster action
+  let
+    newCluster :: EventFold ClusterName Peer e
+    newCluster = urEventFold ur
+  when (oldCluster /= newCluster) $ liftIO (notify newCluster)
   now <- liftIO getTime
   modify
     (\state ->
       let
-        newCluster :: EventFold ClusterName Peer e
-        newCluster = urEventFold ur
-
         newDivergent :: Map Peer (EventId Peer, TimeSpec)
         newDivergent =
           Map.differenceWith
