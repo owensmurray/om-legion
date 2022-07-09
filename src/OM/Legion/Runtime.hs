@@ -439,7 +439,7 @@ executeRuntime
       let
         periodicResend :: (MonadIO m) => m ()
         periodicResend = do
-          liftIO $ threadDelay 100000
+          liftIO $ threadDelay 500_000
           Fork.call runtimeChan Resend
           periodicResend
       in
