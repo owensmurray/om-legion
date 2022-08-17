@@ -39,7 +39,6 @@ module OM.Legion.Runtime (
   Stats(..),
 ) where
 
-
 import Control.Arrow ((&&&))
 import Control.Concurrent (Chan, newChan, readChan, threadDelay,
   writeChan)
@@ -58,7 +57,7 @@ import Data.Binary (Binary)
 import Data.ByteString.Lazy (ByteString)
 import Data.CRDT.EventFold (Event(Output, State),
   UpdateResult(urEventFold, urOutputs), Diff, EventFold, EventId,
-  divergent, events, infimumId, projParticipants)
+  divergent, infimumId, projParticipants)
 import Data.CRDT.EventFold.Monad (MonadUpdateEF(diffMerge, disassociate,
   event, fullMerge, participate), EventFoldT, runEventFoldT)
 import Data.Conduit ((.|), awaitForever, runConduit, yield)
@@ -78,7 +77,7 @@ import OM.Legion.Connection (JoinResponse(JoinOk),
   rsConnections, rsDivergent, rsJoins, rsNextId, rsNotify, rsSelf,
   rsWaiting), EventConstraints, disconnect, peerMessagePort, sendPeer)
 import OM.Legion.MsgChan (MessageId(M), Peer(unPeer), PeerMessage(PMCall,
-  PMCallResponse, PMCast, PMFullMerge, PMMerge), ClusterName)
+  PMCallResponse, PMCast, PMFullMerge, PMMerge, PMOutputs), ClusterName)
 import OM.Logging (withPrefix)
 import OM.Show (showj, showt)
 import OM.Socket (AddressDescription(AddressDescription),
@@ -86,16 +85,13 @@ import OM.Socket (AddressDescription(AddressDescription),
 import OM.Socket.Server (connectServer, openServer)
 import System.Clock (TimeSpec)
 import System.Random.Shuffle (shuffleM)
-import qualified Data.Binary as Binary (Binary(get, put))
-import qualified Data.CRDT.EventFold as EF (allParticipants, new, origin)
-import qualified Data.Map as Map (delete, differenceWith, fromList,
-  insert, keysSet, lookup, partitionWithKey, toList)
-import qualified Data.Set as Set (delete, null, toList)
-import qualified OM.Fork as Fork (call, cast, respond)
+import qualified Data.Binary as Binary
+import qualified Data.CRDT.EventFold as EF
+import qualified Data.Map as Map
+import qualified Data.Set as Set
+import qualified OM.Fork as Fork
 import qualified OM.Socket.Server as Server
-  (AddressDescription(AddressDescription), Endpoint(Endpoint))
-import qualified System.Clock as Clock (Clock(Monotonic),
-  TimeSpec(TimeSpec, nsec, sec), diffTimeSpec, getTime, toNanoSecs)
+import qualified System.Clock as Clock
 
 {-# ANN module ("HLint: ignore Redundant <$>" :: String) #-}
 
@@ -293,6 +289,7 @@ data RuntimeMessage e
   | Eject Peer (Responder ())
   | Merge (Diff ClusterName Peer e)
   | FullMerge (EventFold ClusterName Peer e)
+  | Outputs (Map (EventId Peer) (Output e))
   | Join JoinRequest (Responder (JoinResponse e))
   | ReadState (Responder (EventFold ClusterName Peer e))
   | Call Peer ByteString (Responder ByteString)
@@ -400,6 +397,7 @@ executeRuntime
               logDebug $ "Handling: " <> showt (msgSource :: Peer, msg)
               case msg of
                 PMFullMerge ps -> yield (FullMerge ps)
+                PMOutputs outputs -> yield (Outputs outputs)
                 PMMerge ps -> yield (Merge ps)
                 PMCall source mid callMsg ->
                   (liftIO . tryAny) (handleUserCall callMsg) >>= \case
@@ -499,6 +497,9 @@ handleRuntimeMessage
      )
   => RuntimeMessage e
   -> StateT (RuntimeState e) m ()
+
+handleRuntimeMessage (Outputs outputs) =
+  respondToWaiting outputs
 
 handleRuntimeMessage (GetStats responder) =
   respond responder =<< gets rsDivergent
@@ -726,8 +727,28 @@ updateClusterAs asPeer action = do
           doModify
       )
   do {- Dispatch outputs. -}
-    respondToWaiting (urOutputs ur)
-    return v
+    self <- gets rsSelf
+    let
+      outputs :: Map (EventId Peer) (Output e)
+      outputs = urOutputs ur
+
+      byRemotePeer :: Map Peer (Map (EventId Peer) (Output e))
+      byRemotePeer =
+        Map.unionsWith
+          (<>)
+          [ Map.singleton peer (Map.singleton eid o)
+          | (eid, o) <- Map.toList outputs
+          , Just peer <- [EF.source eid]
+          ]
+    respondToWaiting outputs
+    sequence_
+      [ do
+          logDebug $ "Sending remote outputs: " <> showt byRemotePeer
+          sendPeer (PMOutputs outputsForPeer) peer
+      | (peer, outputsForPeer) <- Map.toList byRemotePeer
+      , peer /= self
+      ]
+  pure v
 
 
 {- | Wait on a consistent response for the given state id. -}
@@ -758,14 +779,15 @@ propagate = do
     liftIO (shuffleM (Set.toList targets)) >>= \case
       [] -> return ()
       target:_ ->
-        case events target cluster of
-          Nothing -> do
-            logInfo
-              $ "Sending full merge because the target's join event "
-              <> "has not reaached the infimum"
-            sendPeer (PMFullMerge cluster) target
-          Just diff ->
-            sendPeer (PMMerge diff) target
+        -- case events target cluster of
+        --   Nothing -> do
+        --     logInfo
+        --       $ "Sending full merge because the target's join event "
+        --       <> "has not reaached the infimum"
+        --     sendPeer (PMFullMerge cluster) target
+        --   Just diff ->
+        --     sendPeer (PMMerge diff) target
+        sendPeer (PMFullMerge cluster) target
     disconnectObsolete
   where
     {- |
