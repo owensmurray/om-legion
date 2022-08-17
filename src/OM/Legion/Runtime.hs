@@ -684,23 +684,31 @@ updateClusterAs asPeer action = do
   when (oldCluster /= newCluster) $ liftIO (notify newCluster)
   now <- liftIO getTime
   modify
-    (\state ->
+    (
       let
-        newDivergent :: Map Peer (EventId Peer, TimeSpec)
-        newDivergent =
-          Map.differenceWith
-            (\new@(newEid, _) old@(oldEid, _) ->
-              if newEid > oldEid
-                then Just new
-                else Just old
-            )
-            ((,now) <$> divergent newCluster)
-            oldDivergent
+        doModify state = 
+          let
+            newDivergent :: Map Peer (EventId Peer, TimeSpec)
+            newDivergent =
+              Map.differenceWith
+                (
+                  let
+                    doDifferenceWith new@(newEid, _) old@(oldEid, _) =
+                      if newEid > oldEid
+                        then Just new
+                        else Just old
+                  in
+                    doDifferenceWith
+                )
+                ((,now) <$> divergent newCluster)
+                oldDivergent
+          in
+            state
+              { rsClusterState = newCluster
+              , rsDivergent = newDivergent
+              }
       in
-        state
-          { rsClusterState = newCluster
-          , rsDivergent = newDivergent
-          }
+        doModify
     )
   respondToWaiting (urOutputs ur)
   return v
