@@ -678,40 +678,42 @@ updateClusterAs asPeer action = do
   (oldCluster, (oldDivergent, notify))
     <- gets (rsClusterState &&& rsDivergent &&& rsNotify)
   (v, ur) <- runEventFoldT asPeer oldCluster action
-  let
-    newCluster :: EventFold ClusterName Peer e
-    newCluster = urEventFold ur
-  when (oldCluster /= newCluster) $ liftIO (notify newCluster)
-  now <- liftIO getTime
-  modify
-    (
-      let
-        doModify state = 
-          let
-            newDivergent :: Map Peer (EventId Peer, TimeSpec)
-            newDivergent =
-              Map.differenceWith
-                (
-                  let
-                    doDifferenceWith new@(newEid, _) old@(oldEid, _) =
-                      if newEid > oldEid
-                        then Just new
-                        else Just old
-                  in
-                    doDifferenceWith
-                )
-                ((,now) <$> divergent newCluster)
-                oldDivergent
-          in
-            state
-              { rsClusterState = newCluster
-              , rsDivergent = newDivergent
-              }
-      in
-        doModify
-    )
-  respondToWaiting (urOutputs ur)
-  return v
+  do {- Update the cluster -}
+    let
+      newCluster :: EventFold ClusterName Peer e
+      newCluster = urEventFold ur
+    when (oldCluster /= newCluster) $ liftIO (notify newCluster)
+    now <- liftIO getTime
+    modify
+      (
+        let
+          doModify state = 
+            let
+              newDivergent :: Map Peer (EventId Peer, TimeSpec)
+              newDivergent =
+                Map.differenceWith
+                  (
+                    let
+                      doDifferenceWith new@(newEid, _) old@(oldEid, _) =
+                        if newEid > oldEid
+                          then Just new
+                          else Just old
+                    in
+                      doDifferenceWith
+                  )
+                  ((,now) <$> divergent newCluster)
+                  oldDivergent
+            in
+              state
+                { rsClusterState = newCluster
+                , rsDivergent = newDivergent
+                }
+        in
+          doModify
+      )
+  do {- Dispatch outputs. -}
+    respondToWaiting (urOutputs ur)
+    return v
 
 
 {- | Wait on a consistent response for the given state id. -}
