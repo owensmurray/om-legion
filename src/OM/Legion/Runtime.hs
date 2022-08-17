@@ -369,9 +369,9 @@ executeRuntime
               logDebug $ "Handling: " <> showt msg
               handleRuntimeMessage msg
               RuntimeState {rsClusterState = cluster2} <- get
-              when (cluster1 /= cluster2) $ do
+              when (cluster1 /= cluster2) $
                 logDebug $ "New Cluster State: " <> showj cluster2
-                propagate
+                -- propagate
               handleBroadcallTimeouts
               handleOutstandingJoins
               handleMessages
