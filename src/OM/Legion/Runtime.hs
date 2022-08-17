@@ -66,7 +66,6 @@ import Data.Default.Class (Default)
 import Data.Int (Int64)
 import Data.Map (Map)
 import Data.Set ((\\), Set)
-import Data.String (IsString(fromString))
 import Data.Time (DiffTime, diffTimeToPicoseconds, picosecondsToDiffTime)
 import Data.UUID (UUID)
 import Data.UUID.V1 (nextUUID)
@@ -391,7 +390,7 @@ executeRuntime
         addy =
           AddressDescription
             (
-              fromString (unPeer (rsSelf rts))
+              unPeer (rsSelf rts)
               <> ":" <> showt peerMessagePort
             )
       in
@@ -422,7 +421,7 @@ executeRuntime
         addy =
           Server.AddressDescription
             (
-              fromString (unPeer (rsSelf rts))
+              unPeer (rsSelf rts)
               <> ":" <> showt joinMessagePort
             )
       in
@@ -852,8 +851,11 @@ makeRuntimeState
 
     addr :: Server.AddressDescription
     addr =
-      fromString (unPeer targetPeer)
-      <> ":" <> showt joinMessagePort
+      Server.AddressDescription
+        (
+          unPeer targetPeer
+          <> ":" <> showt joinMessagePort
+        )
 
 makeRuntimeState
     notify

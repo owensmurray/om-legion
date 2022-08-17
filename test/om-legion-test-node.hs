@@ -97,7 +97,7 @@ main = do
     getStartupMode = do
         domain <- liftIO $ getEnv "DOMAIN"
         hostName <- liftIO $ getHostName
-        let self = Peer (hostName <> "." <> domain)
+        let self = Peer (fromString (hostName <> "." <> domain))
         nsString <- liftIO $ getEnv "NAMESPACE"
         let
           clusterName :: (IsString a) => a
@@ -107,7 +107,7 @@ main = do
           node:_ ->
             let
               joinPeer :: Peer
-              joinPeer = Peer $ node <> "." <> domain
+              joinPeer = Peer . fromString $ node <> "." <> domain
             in
               pure $
                 JoinCluster

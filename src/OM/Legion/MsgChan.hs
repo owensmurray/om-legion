@@ -34,7 +34,6 @@ import Data.String (IsString)
 import Data.Text (Text)
 import Data.UUID (UUID)
 import GHC.Generics (Generic)
-import Network.Socket (HostName)
 import Web.HttpApiData (FromHttpApiData, ToHttpApiData)
 
 
@@ -135,7 +134,7 @@ instance (Binary e, Binary (Output e), Binary (State e)) => Binary (PeerMessage 
 
 {- | The identification of a node within the legion cluster. -}
 newtype Peer = Peer
-  { unPeer :: HostName
+  { unPeer :: Text
   }
   deriving newtype (
     Eq, Ord, Show, ToJSON, Binary, ToJSONKey, FromJSON, FromJSONKey,

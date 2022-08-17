@@ -34,7 +34,6 @@ import Data.CRDT.EventFold (Event(Output, State), EventFold, EventId)
 import Data.Conduit ((.|), ConduitT, awaitForever, runConduit, yield)
 import Data.Default.Class (Default)
 import Data.Map (Map)
-import Data.String (IsString(fromString))
 import GHC.Generics (Generic)
 import Network.Socket (PortNumber)
 import OM.Fork (Responder)
@@ -80,7 +79,7 @@ createConnection peer = do
         addy =
           AddressDescription
             (
-              fromString (unPeer peer)
+              unPeer peer
               <> ":" <> showt peerMessagePort
             )
       in
