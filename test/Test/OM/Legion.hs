@@ -18,6 +18,7 @@ module Test.OM.Legion (
   Client,
   send,
   makeClient,
+  makeClientLocal,
 ) where
 
 
@@ -123,6 +124,14 @@ makeClient (Namespace namespace) ord = do
   Client <$>
     connectServer
       (AddressDescription (targetPeer <> ":9999"))
+      Nothing
+
+
+makeClientLocal :: (MonadLoggerIO m) => m Client
+makeClientLocal= do
+  Client <$>
+    connectServer
+      (AddressDescription ("localhost:9999"))
       Nothing
 
 

@@ -109,7 +109,7 @@ runOps config n ops = do
       , (namespace config)
       , "run"
       , "test-driver"
-      , "--image=us.gcr.io/friendlee/om-legion-test-run:latest"
+      , "--image=us.gcr.io/friendlee/om-legion-test:latest"
       , "-i"
       , "--rm"
       , "--restart=Never"
@@ -362,7 +362,7 @@ checkStable config n v = do
     , (namespace config)
     , "run"
     , "test-driver"
-    , "--image=us.gcr.io/friendlee/om-legion-test-stable:latest"
+    , "--image=us.gcr.io/friendlee/om-legion-test:latest"
     , "-i"
     , "--rm"
     , "--restart=Never"

@@ -22,10 +22,10 @@ import Control.Monad.Logger.CallStack (LoggingT(runLoggingT), MonadLogger,
 import Data.Aeson.Lens (AsPrimitive(_String), AsValue(_Array), key)
 import Data.String (IsString(fromString))
 import Network.HostName (HostName, getHostName)
-import OM.Fork (runRace)
+import OM.Fork (race, runRace, wait)
 import OM.Kubernetes (Pod(unPod), newK8s, queryPods)
 import OM.Legion (Peer(Peer), StartupMode(JoinCluster, NewCluster),
-  Runtime, applyFast, eject, forkLegionary, getSelf, getStats, readState)
+  Runtime, applyConsistent, eject, forkLegionary, getSelf, getStats, readState)
 import OM.Logging (fdLogging, parseLevel, stdoutLogging, teeLogging,
   withStandardFormat)
 import OM.Show (showt)
@@ -71,21 +71,23 @@ main = do
               ))
               Nothing
 
-          runConduit
-            (
-              pure ()
-              .| openServer 
-                   Endpoint
-                     { bindAddr = "0.0.0.0:9999"
-                     , tls = Nothing
-                     }
-              .| awaitForever (lift . void . handle runtime)
-            )
+          race "service endpoint" $
+            runConduit
+              (
+                pure ()
+                .| openServer 
+                     Endpoint
+                       { bindAddr = "0.0.0.0:9999"
+                       , tls = Nothing
+                       }
+                .| awaitForever (lift . void . handle runtime)
+              )
+          wait
   where
     handle :: (MonadIO m) => Runtime Op -> (Request, Response -> m b) -> m b
     handle runtime (req, respond) =
       case req of
-        OpReq op -> respond . OpR =<< applyFast runtime op
+        OpReq op -> respond . OpR =<< applyConsistent runtime op
         ReadState -> respond . ReadStateR =<< readState runtime
         ReadStats -> respond . ReadStatsR =<< getStats runtime
 
