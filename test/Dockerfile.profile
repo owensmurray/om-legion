@@ -5,6 +5,10 @@ RUN apt-get update && apt-get install -y libgmp10 libleveldb1v5 psmisc netbase c
 
 ADD /bin /bin
 
-CMD [ "/bin/om-legion-test-stable" ]
+CMD [ \
+    "bash", \
+    "-c", \
+    "/bin/om-legion-test-node +RTS -L25 -hr -p -l -RTS; sleep 1000" \
+  ]
 
 

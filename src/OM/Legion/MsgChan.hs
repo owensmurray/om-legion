@@ -27,14 +27,15 @@ import Control.Monad.IO.Class (MonadIO(liftIO))
 import Data.Aeson (FromJSON, FromJSONKey, ToJSON, ToJSONKey)
 import Data.Binary (Binary, Word64)
 import Data.ByteString.Lazy (ByteString)
-import Data.CRDT.EventFold (Event(Output, State), Diff, EventFold)
+import Data.CRDT.EventFold (Event(Output, State), Diff, EventFold,
+  EventId)
 import Data.Conduit (ConduitT, yield)
 import Data.Foldable (traverse_)
+import Data.Map (Map)
 import Data.String (IsString)
 import Data.Text (Text)
 import Data.UUID (UUID)
 import GHC.Generics (Generic)
-import Network.Socket (HostName)
 import Web.HttpApiData (FromHttpApiData, ToHttpApiData)
 
 
@@ -122,6 +123,8 @@ data PeerMessage e
     {- ^ Send a user cast message from one peer to another. -}
   | PMCallResponse Peer MessageId ByteString
     {- ^ Send a response to a user call message. -}
+  | PMOutputs (Map (EventId Peer) (Output e))
+    {- ^ Send outputs to the appropriate recipient. -}
   deriving stock (Generic)
 deriving stock instance
     ( Show e
@@ -135,7 +138,7 @@ instance (Binary e, Binary (Output e), Binary (State e)) => Binary (PeerMessage 
 
 {- | The identification of a node within the legion cluster. -}
 newtype Peer = Peer
-  { unPeer :: HostName
+  { unPeer :: Text
   }
   deriving newtype (
     Eq, Ord, Show, ToJSON, Binary, ToJSONKey, FromJSON, FromJSONKey,
