@@ -480,9 +480,23 @@ handleBroadcallTimeouts = do
 
 
 {- | Execute the incoming messages. -}
-handleRuntimeMessage :: (
-      EventConstraints e, MonadCatch m, MonadLoggerIO m
-    )
+handleRuntimeMessage
+  :: ( Binary (Output e)
+     , Binary (State e)
+     , Binary e
+     , Default (State e)
+     , Eq (Output e)
+     , Eq e
+     , Event Peer e
+     , MonadCatch m
+     , MonadLoggerIO m
+     , Show (Output e)
+     , Show (State e)
+     , Show e
+     , ToJSON (Output e)
+     , ToJSON (State e)
+     , ToJSON e
+     )
   => RuntimeMessage e
   -> StateT (RuntimeState e) m ()
 
