@@ -51,7 +51,7 @@ import Control.Monad.Logger.CallStack (LoggingT(runLoggingT),
   MonadLoggerIO(askLoggerIO), LogStr, MonadLogger, logDebug, logError,
   logInfo)
 import Control.Monad.State (MonadState(get, put), StateT, evalStateT,
-  gets, modify)
+  gets, modify')
 import Control.Monad.Trans.Class (lift)
 import Data.Aeson (ToJSON)
 import Data.Binary (Binary)
@@ -471,7 +471,7 @@ handleBroadcallTimeouts = do
   sequence_ [
       do
         respond responder responses
-        modify (\rs -> rs {
+        modify' (\rs -> rs {
             rsBroadcalls = Map.delete messageId (rsBroadcalls rs)
           })
       | (messageId, (responses, responder, expiry)) <- Map.toList broadcalls
@@ -684,7 +684,7 @@ updateClusterAs asPeer action = do
       newCluster = urEventFold ur
     when (oldCluster /= newCluster) $ liftIO (notify newCluster)
     now <- liftIO getTime
-    modify
+    modify'
       (
         let
           doModify state = 
@@ -704,6 +704,7 @@ updateClusterAs asPeer action = do
                   ((,now) <$> divergent newCluster)
                   oldDivergent
             in
+              newCluster `seq` newDivergent `seq`
               state
                 { rsClusterState = newCluster
                 , rsDivergent = newDivergent
@@ -722,7 +723,7 @@ waitOn :: (Monad m)
   -> Responder (Output e)
   -> StateT (RuntimeState e) m ()
 waitOn sid responder =
-  modify (\state@RuntimeState {rsWaiting} -> state {
+  modify' (\state@RuntimeState {rsWaiting} -> state {
     rsWaiting = Map.insert sid responder rsWaiting
   })
 
