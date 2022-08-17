@@ -645,11 +645,14 @@ newMessageId = do
   Like 'runEventFoldT', plus automatically take care of doing necessary
   IO implied by the cluster update.
 -}
-updateCluster :: (
-      EventConstraints e, MonadCatch m, MonadLoggerIO m
-    )
-  => EventFoldT ClusterName Peer e (StateT (RuntimeState e) m) a
-  -> StateT (RuntimeState e) m a
+updateCluster
+  :: ( EventConstraints e
+     , MonadCatch m
+     , MonadLoggerIO m
+     , MonadState (RuntimeState e) m
+     )
+  => EventFoldT ClusterName Peer e m a
+  -> m a
 updateCluster action = do
   RuntimeState {rsSelf} <- get
   updateClusterAs rsSelf action
@@ -665,15 +668,11 @@ updateClusterAs
      ( EventConstraints e
      , MonadCatch m
      , MonadLoggerIO m
+     , MonadState (RuntimeState e) m
      )
   => Peer
-  -> EventFoldT
-       ClusterName
-       Peer
-       e
-       (StateT (RuntimeState e) m)
-       a
-  -> StateT (RuntimeState e) m a
+  -> EventFoldT ClusterName Peer e m a
+  -> m a
 updateClusterAs asPeer action = do
   (oldCluster, (oldDivergent, notify))
     <- gets (rsClusterState &&& rsDivergent &&& rsNotify)
@@ -776,9 +775,14 @@ propagate = do
   Respond to event applications that are waiting on a consistent result,
   if such a result is available.
 -}
-respondToWaiting :: (MonadLoggerIO m, Show (Output e))
+respondToWaiting
+  :: forall m e.
+     ( MonadLoggerIO m
+     , MonadState (RuntimeState e) m
+     , Show (Output e)
+     )
   => Map (EventId Peer) (Output e)
-  -> StateT (RuntimeState e) m ()
+  -> m ()
 respondToWaiting available = do
     rs <- get
     logDebug
@@ -786,9 +790,8 @@ respondToWaiting available = do
     mapM_ respondToOne (Map.toList available)
   where
     respondToOne
-      :: (MonadIO m)
-      => (EventId Peer, Output e)
-      -> StateT (RuntimeState e) m ()
+      :: (EventId Peer, Output e)
+      -> m ()
     respondToOne (sid, output) = do
       state@RuntimeState {rsWaiting} <- get
       case Map.lookup sid rsWaiting of
