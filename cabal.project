@@ -1,0 +1,6 @@
+packages:
+  "."
+package om-legion
+  ghc-options:
+    -Werror
+
