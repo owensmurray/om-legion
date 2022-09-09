@@ -94,6 +94,7 @@ import qualified OM.Socket.Server as Server
 import qualified System.Clock as Clock
 
 {-# ANN module ("HLint: ignore Redundant <$>" :: String) #-}
+{-# ANN module ("HLint: ignore Use underscore" :: String) #-}
 
 {- |
   Shorthand for all the monad constraints, mainly use so that
@@ -117,6 +118,11 @@ forkLegionary
   -> (ByteString -> IO ()) {- ^ Handle a user cast message. -}
   -> (Peer -> EventFold ClusterName Peer e -> IO ())
      {- ^ Callback when the cluster-wide eventfold changes. -}
+  -> Int
+     {- ^
+       The propagation interval, in microseconds (for use with
+       `threadDelay`).
+     -}
   -> StartupMode e
      {- ^
        How to start the runtime, by creating new cluster or joining an
@@ -127,6 +133,7 @@ forkLegionary
     handleUserCall
     handleUserCast
     notify
+    resendInterval
     startupMode
   = do
     logInfo $ "Starting up with the following Mode: " <> showt startupMode
@@ -137,6 +144,7 @@ forkLegionary
       executeRuntime
         handleUserCall
         handleUserCast
+        resendInterval
         rts
         runtimeChan
     let
@@ -341,6 +349,11 @@ executeRuntime
      {- ^ Handle a user call request.  -}
   -> (ByteString -> IO ())
      {- ^ Handle a user cast message. -}
+  -> Int
+     {- ^
+       The propagation interval, in microseconds (for use with
+       `threadDelay`).
+     -}
   -> RuntimeState e
   -> RChan e
      {- ^
@@ -351,6 +364,7 @@ executeRuntime
 executeRuntime
     handleUserCall
     handleUserCast
+    resendInterval
     rts
     runtimeChan
   = do
@@ -436,7 +450,7 @@ executeRuntime
       let
         periodicResend :: (MonadIO m) => m ()
         periodicResend = do
-          liftIO $ threadDelay 500_000
+          liftIO $ threadDelay resendInterval
           Fork.call runtimeChan Resend
           periodicResend
       in
