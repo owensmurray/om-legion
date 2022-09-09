@@ -10,7 +10,6 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 
@@ -57,12 +56,12 @@ import Data.Binary (Binary)
 import Data.ByteString.Lazy (ByteString)
 import Data.CRDT.EventFold (Event(Output, State),
   UpdateResult(urEventFold, urOutputs), Diff, EventFold, EventId,
-  divergent, infimumId, projParticipants)
+  infimumId, projParticipants)
 import Data.CRDT.EventFold.Monad (MonadUpdateEF(diffMerge, disassociate,
   event, fullMerge, participate), EventFoldT, runEventFoldT)
 import Data.Conduit ((.|), awaitForever, runConduit, yield)
 import Data.Default.Class (Default)
-import Data.Int (Int64)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.Map (Map)
 import Data.Set ((\\), Set)
 import Data.Time (DiffTime, diffTimeToPicoseconds, picosecondsToDiffTime)
@@ -74,8 +73,8 @@ import OM.Fork (Actor(Msg, actorChan), Race, Responder, race)
 import OM.Legion.Conduit (chanToSink)
 import OM.Legion.Connection (JoinResponse(JoinOk),
   RuntimeState(RuntimeState, rsBroadcalls, rsCalls, rsClusterState,
-  rsConnections, rsDivergent, rsJoins, rsNextId, rsNotify, rsSelf,
-  rsWaiting), EventConstraints, disconnect, peerMessagePort, sendPeer)
+  rsConnections, rsJoins, rsNextId, rsNotify, rsSelf, rsWaiting),
+  EventConstraints, disconnect, peerMessagePort, sendPeer)
 import OM.Legion.MsgChan (MessageId(M), Peer(unPeer), PeerMessage(PMCall,
   PMCallResponse, PMCast, PMFullMerge, PMMerge, PMOutputs), ClusterName)
 import OM.Logging (withPrefix)
@@ -83,6 +82,7 @@ import OM.Show (showj, showt)
 import OM.Socket (AddressDescription(AddressDescription),
   Endpoint(Endpoint), openIngress)
 import OM.Socket.Server (connectServer, openServer)
+import OM.Time (MonadTimeSpec(getTime), addTime, diffTimeSpec)
 import System.Clock (TimeSpec)
 import System.Random.Shuffle (shuffleM)
 import qualified Data.Binary as Binary
@@ -91,9 +91,9 @@ import qualified Data.Map as Map
 import qualified Data.Set as Set
 import qualified OM.Fork as Fork
 import qualified OM.Socket.Server as Server
-import qualified System.Clock as Clock
 
 {-# ANN module ("HLint: ignore Redundant <$>" :: String) #-}
+{-# ANN module ("HLint: ignore Use underscore" :: String) #-}
 
 {- |
   Shorthand for all the monad constraints, mainly use so that
@@ -103,6 +103,7 @@ type MonadConstraints m =
   ( MonadCatch m
   , MonadFail m
   , MonadLoggerIO m
+  , MonadTimeSpec m
   , MonadUnliftIO m
   , Race
   )
@@ -117,6 +118,11 @@ forkLegionary
   -> (ByteString -> IO ()) {- ^ Handle a user cast message. -}
   -> (Peer -> EventFold ClusterName Peer e -> IO ())
      {- ^ Callback when the cluster-wide eventfold changes. -}
+  -> Int
+     {- ^
+       The propagation interval, in microseconds (for use with
+       `threadDelay`).
+     -}
   -> StartupMode e
      {- ^
        How to start the runtime, by creating new cluster or joining an
@@ -127,18 +133,22 @@ forkLegionary
     handleUserCall
     handleUserCast
     notify
+    resendInterval
     startupMode
   = do
     logInfo $ "Starting up with the following Mode: " <> showt startupMode
     rts <- makeRuntimeState notify startupMode
     runtimeChan <- RChan <$> liftIO newChan
     logging <- withPrefix (logPrefix (rsSelf rts)) <$> askLoggerIO
+    rStats <- liftIO $ newIORef mempty
     (`runLoggingT` logging) $
       executeRuntime
         handleUserCall
         handleUserCast
+        resendInterval
         rts
         runtimeChan
+        rStats
     let
       clusterId :: ClusterName
       clusterId = EF.origin (rsClusterState rts)
@@ -147,6 +157,7 @@ forkLegionary
         { rChan = runtimeChan
         , rSelf = rsSelf rts
         , rClusterId = clusterId
+        , rStats
         }
   where
     logPrefix :: Peer -> LogStr
@@ -158,6 +169,7 @@ data Runtime e = Runtime
   {      rChan :: RChan e
   ,      rSelf :: Peer
   , rClusterId :: ClusterName
+  ,     rStats :: IORef (Map Peer TimeSpec)
   }
 instance Actor (Runtime e) where
   type Msg (Runtime e) = RuntimeMessage e
@@ -302,7 +314,7 @@ data RuntimeMessage e
   | SendCallResponse Peer MessageId ByteString
   | HandleCallResponse Peer MessageId ByteString
   | Resend (Responder ())
-  | GetStats (Responder (Map Peer (EventId Peer, TimeSpec)))
+  | GetStats (Responder (EventFold ClusterName Peer e))
 deriving stock instance
     ( Show e
     , Show (Output e)
@@ -328,6 +340,7 @@ executeRuntime
      , MonadCatch m
      , MonadFail m
      , MonadLoggerIO m
+     , MonadTimeSpec m
      , MonadUnliftIO m
      , Race
      , Show (Output e)
@@ -341,18 +354,26 @@ executeRuntime
      {- ^ Handle a user call request.  -}
   -> (ByteString -> IO ())
      {- ^ Handle a user cast message. -}
+  -> Int
+     {- ^
+       The propagation interval, in microseconds (for use with
+       `threadDelay`).
+     -}
   -> RuntimeState e
   -> RChan e
      {- ^
        A source of requests, together with a way to respond to the
        requets.
      -}
+  -> IORef (Map Peer TimeSpec)
   -> m ()
 executeRuntime
     handleUserCall
     handleUserCast
+    resendInterval
     rts
     runtimeChan
+    peerStats
   = do
     {- Start the various messages sources. -}
     race "om-legion peer listener" runPeerListener
@@ -394,6 +415,11 @@ executeRuntime
         runConduit (
           openIngress (Endpoint addy Nothing)
           .| awaitForever (\ (msgSource, msg) -> do
+              liftIO $ do
+                now <- getTime
+                atomicModifyIORef'
+                  peerStats
+                  (\peerTimes -> (Map.insert msgSource now peerTimes, ()))
               logDebug $ "Handling: " <> showt (msgSource :: Peer, msg)
               case msg of
                 PMFullMerge ps -> yield (FullMerge ps)
@@ -436,7 +462,7 @@ executeRuntime
       let
         periodicResend :: (MonadIO m) => m ()
         periodicResend = do
-          liftIO $ threadDelay 500_000
+          liftIO $ threadDelay resendInterval
           Fork.call runtimeChan Resend
           periodicResend
       in
@@ -462,7 +488,11 @@ handleOutstandingJoins = do
 
 
 {- | Handle any broadcall timeouts. -}
-handleBroadcallTimeouts :: (MonadIO m) => StateT (RuntimeState e) m ()
+handleBroadcallTimeouts
+  :: ( MonadIO m
+     , MonadTimeSpec m
+     )
+  => StateT (RuntimeState e) m ()
 handleBroadcallTimeouts = do
   broadcalls <- gets rsBroadcalls
   now <- getTime
@@ -488,6 +518,7 @@ handleRuntimeMessage
      , Event Peer e
      , MonadCatch m
      , MonadLoggerIO m
+     , MonadTimeSpec m
      , Show (Output e)
      , Show (State e)
      , Show e
@@ -499,67 +530,83 @@ handleRuntimeMessage
   -> StateT (RuntimeState e) m ()
 
 handleRuntimeMessage (Outputs outputs) =
+  {-# SCC "Outputs" #-}
   respondToWaiting outputs
 
 handleRuntimeMessage (GetStats responder) =
-  respond responder =<< gets rsDivergent
+  {-# SCC "GetStats" #-}
+  respond responder =<< gets rsClusterState
 
 handleRuntimeMessage (ApplyFast e responder) =
+  {-# SCC "ApplyFast" #-}
   updateCluster $
     fst <$> event e >>= respond responder
 
-handleRuntimeMessage (ApplyConsistent e responder) = do
-  updateCluster $ do
-    (_v, sid) <- event e
-    lift (waitOn sid responder)
-  rs <- get
-  logDebug $ "Waiting: " <> showt (rsWaiting rs)
+handleRuntimeMessage (ApplyConsistent e responder) =
+  {-# SCC "ApplyConsistent" #-}
+  (
+    do
+      updateCluster $ do
+        (_v, sid) <- event e
+        lift (waitOn sid responder)
+      rs <- get
+      logDebug $ "Waiting: " <> showt (rsWaiting rs)
+  )
 
-handleRuntimeMessage (Eject peer responder) = do
-  updateClusterAs peer $
-    void $ disassociate peer
-  propagate
-  {- ↓
-    This is an awful hack. The problem is that 'propagate' uses
-    'sendPeer', but 'sendPeer' itself is asynchronous (though it should be
-    very fast). The correct solution is a bit tricky. We can either figure
-    out some way to block all the way down through the internals of the
-    connection management, or else maybe extend the "join port" server
-    endpoint to accept eject notifications as well as join requests.
-  -}
-  liftIO $ threadDelay 500_000
-  respond responder ()
+handleRuntimeMessage (Eject peer responder) =
+  {-# SCC "Eject" #-}
+  do
+    updateClusterAs peer $
+      void $ disassociate peer
+    propagate
+    {- ↓
+      This is an awful hack. The problem is that 'propagate' uses
+      'sendPeer', but 'sendPeer' itself is asynchronous (though it should be
+      very fast). The correct solution is a bit tricky. We can either figure
+      out some way to block all the way down through the internals of the
+      connection management, or else maybe extend the "join port" server
+      endpoint to accept eject notifications as well as join requests.
+    -}
+    liftIO $ threadDelay 500_000
+    respond responder ()
 
 handleRuntimeMessage (Merge other) =
+  {-# SCC "Merge" #-}
   updateCluster $
     diffMerge other >>= \case
       Left err -> logError $ "Bad cluster merge: " <> showt err
       Right () -> return ()
 
 handleRuntimeMessage (FullMerge other) =
+  {-# SCC "FullMerge" #-}
   updateCluster $
     fullMerge other >>= \case
       Left err -> logError $ "Bad cluster merge: " <> showt err
       Right () -> return ()
 
-handleRuntimeMessage (Join (JoinRequest peer) responder) = do
-  logInfo $ "Handling join from peer: " <> showt peer
-  updateCluster (do
-      void $ disassociate peer
-      void $ participate peer
-    )
-  RuntimeState {rsClusterState} <- get
-  logInfo $ "Join immediately with: " <> showt rsClusterState
-  respond responder (JoinOk rsClusterState)
+handleRuntimeMessage (Join (JoinRequest peer) responder) =
+  {-# SCC "Join" #-}
+  do
+    logInfo $ "Handling join from peer: " <> showt peer
+    updateCluster (do
+        void $ disassociate peer
+        void $ participate peer
+      )
+    RuntimeState {rsClusterState} <- get
+    logInfo $ "Join immediately with: " <> showt rsClusterState
+    respond responder (JoinOk rsClusterState)
 
 handleRuntimeMessage (ReadState responder) =
+  {-# SCC "ReadState" #-}
   respond responder . rsClusterState =<< get
 
-handleRuntimeMessage (Call target msg responder) = do
-    mid <- newMessageId
-    source <- gets rsSelf
-    setCallResponder mid
-    sendPeer (PMCall source mid msg) target
+handleRuntimeMessage (Call target msg responder) =
+    {-# SCC "Call" #-}
+    do
+      mid <- newMessageId
+      source <- gets rsSelf
+      setCallResponder mid
+      sendPeer (PMCall source mid msg) target
   where
     setCallResponder :: (Monad m)
       => MessageId
@@ -571,14 +618,17 @@ handleRuntimeMessage (Call target msg responder) = do
         }
 
 handleRuntimeMessage (Cast target msg) =
+  {-# SCC "Cast" #-}
   sendPeer (PMCast msg) target
 
-handleRuntimeMessage (Broadcall timeout msg responder) = do
-    expiry <- addTime timeout <$> getTime
-    mid <- newMessageId
-    source <- gets rsSelf
-    setBroadcallResponder expiry mid
-    mapM_ (sendPeer (PMCall source mid msg)) =<< getPeers
+handleRuntimeMessage (Broadcall timeout msg responder) =
+    {-# SCC "Broadcall" #-}
+    do
+      expiry <- addTime timeout <$> getTime
+      mid <- newMessageId
+      source <- gets rsSelf
+      setBroadcallResponder expiry mid
+      mapM_ (sendPeer (PMCall source mid msg)) =<< getPeers
   where
     setBroadcallResponder :: (Monad m)
       => TimeSpec
@@ -600,46 +650,52 @@ handleRuntimeMessage (Broadcall timeout msg responder) = do
         }
 
 handleRuntimeMessage (Broadcast msg) =
+  {-# SCC "Broadcast" #-}
   mapM_ (sendPeer (PMCast msg)) =<< getPeers
 
-handleRuntimeMessage (SendCallResponse target mid msg) = do
-  source <- gets rsSelf
-  sendPeer (PMCallResponse source mid msg) target
+handleRuntimeMessage (SendCallResponse target mid msg) =
+  {-# SCC "SendCallResponse" #-}
+  do
+    source <- gets rsSelf
+    sendPeer (PMCallResponse source mid msg) target
 
-handleRuntimeMessage (HandleCallResponse source mid msg) = do
-  state@RuntimeState {rsCalls, rsBroadcalls} <- get
-  case Map.lookup mid rsCalls of
-    Nothing ->
-      case Map.lookup mid rsBroadcalls of
-        Nothing -> return ()
-        Just (responses, responder, expiry) ->
-          let
-            responses2 = Map.insert source (Just msg) responses
-            response = Map.fromList [
-                (peer, r)
-                | (peer, Just r) <- Map.toList responses2
-              ]
-            peers = Map.keysSet responses2
-          in
-            if Set.null (peers \\ Map.keysSet response)
-              then do
-                respond responder (Just <$> response)
-                put state {
-                    rsBroadcalls = Map.delete mid rsBroadcalls
-                  }
-              else
-                put state {
-                    rsBroadcalls =
-                      Map.insert
-                        mid
-                        (responses2, responder, expiry)
-                        rsBroadcalls
-                  }
-    Just responder -> do
-      respond responder msg
-      put state {rsCalls = Map.delete mid rsCalls}
+handleRuntimeMessage (HandleCallResponse source mid msg) =
+  {-# SCC "HandleCallResponse" #-}
+  do
+    state@RuntimeState {rsCalls, rsBroadcalls} <- get
+    case Map.lookup mid rsCalls of
+      Nothing ->
+        case Map.lookup mid rsBroadcalls of
+          Nothing -> return ()
+          Just (responses, responder, expiry) ->
+            let
+              responses2 = Map.insert source (Just msg) responses
+              response = Map.fromList [
+                  (peer, r)
+                  | (peer, Just r) <- Map.toList responses2
+                ]
+              peers = Map.keysSet responses2
+            in
+              if Set.null (peers \\ Map.keysSet response)
+                then do
+                  respond responder (Just <$> response)
+                  put state {
+                      rsBroadcalls = Map.delete mid rsBroadcalls
+                    }
+                else
+                  put state {
+                      rsBroadcalls =
+                        Map.insert
+                          mid
+                          (responses2, responder, expiry)
+                          rsBroadcalls
+                    }
+      Just responder -> do
+        respond responder msg
+        put state {rsCalls = Map.delete mid rsCalls}
 
 handleRuntimeMessage (Resend responder) =
+  {-# SCC "Resend" #-}
   propagate >>= respond responder
 
 
@@ -689,40 +745,22 @@ updateClusterAs
   -> EventFoldT ClusterName Peer e m a
   -> m a
 updateClusterAs asPeer action = do
-  (oldCluster, (oldDivergent, notify))
-    <- gets (rsClusterState &&& rsDivergent &&& rsNotify)
+  (oldCluster, notify)
+    <- gets (rsClusterState &&& rsNotify)
   (v, ur) <- runEventFoldT asPeer oldCluster action
   do {- Update the cluster -}
     let
       newCluster :: EventFold ClusterName Peer e
       newCluster = urEventFold ur
     when (oldCluster /= newCluster) $ liftIO (notify newCluster)
-    now <- liftIO getTime
     modify'
       (
         let
           doModify state = 
-            let
-              newDivergent :: Map Peer (EventId Peer, TimeSpec)
-              newDivergent =
-                Map.differenceWith
-                  (
-                    let
-                      doDifferenceWith new@(newEid, _) old@(oldEid, _) =
-                        if newEid > oldEid
-                          then Just new
-                          else Just old
-                    in
-                      doDifferenceWith
-                  )
-                  ((,now) <$> divergent newCluster)
-                  oldDivergent
-            in
-              newCluster `seq` newDivergent `seq`
-              state
-                { rsClusterState = newCluster
-                , rsDivergent = newDivergent
-                }
+            newCluster `seq`
+            state
+              { rsClusterState = newCluster
+              }
         in
           doModify
       )
@@ -923,7 +961,6 @@ makeRuntimeState
         , rsNextId
         , rsNotify = notify self
         , rsJoins = mempty
-        , rsDivergent = mempty
         }
 
 
@@ -975,46 +1012,17 @@ respond :: (MonadIO m) => Responder a -> a -> m ()
 respond responder = void . Fork.respond responder
 
 
-{- | Add a 'DiffTime' to a 'TimeSpec'. -}
-addTime :: DiffTime -> TimeSpec -> TimeSpec
-addTime diff time =
-  let
-    rat = toRational diff
-
-    secDiff :: Int64
-    secDiff = truncate rat
-
-    nsecDiff :: Int64
-    nsecDiff = truncate ((toRational diff - toRational secDiff) * 1_000_000_000)
-  in
-    Clock.TimeSpec {
-      Clock.sec = Clock.sec time + secDiff,
-      Clock.nsec = Clock.nsec time + nsecDiff
-    }
-
-
-{- | Specialized 'Clock.getTime'. -}
-getTime :: (MonadIO m) => m TimeSpec
-getTime = liftIO $ Clock.getTime Clock.Monotonic
-
-
 {- |
   Retrieve some basic stats that can be used to intuit the health of
   the cluster.
 -}
 getStats :: (MonadIO m) => Runtime e -> m Stats
 getStats runtime = do
-  divergent_ <- Fork.call runtime GetStats
   now <- liftIO getTime
+  stats <- liftIO $ readIORef (rStats runtime)
   pure
     Stats
-      { timeWithoutProgress = diffTime now . snd <$> divergent_
+      { timeWithoutProgress = diffTimeSpec now <$> stats
       }
-
-
-{- | Take the difference of two time specs. -}
-diffTime :: TimeSpec -> TimeSpec -> DiffTime
-diffTime a b =
-  realToFrac (Clock.toNanoSecs (Clock.diffTimeSpec a b)) / 1_000_000_000
 
 

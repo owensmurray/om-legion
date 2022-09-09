@@ -171,7 +171,6 @@ data RuntimeState e = RuntimeState
                         such events.  Therefore, this field tracks the
                         outstanding joins until they become consistent.
                       -}
-  ,    rsDivergent :: Map Peer (EventId Peer, TimeSpec)
   }
 
 
