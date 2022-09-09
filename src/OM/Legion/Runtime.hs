@@ -62,7 +62,6 @@ import Data.CRDT.EventFold.Monad (MonadUpdateEF(diffMerge, disassociate,
   event, fullMerge, participate), EventFoldT, runEventFoldT)
 import Data.Conduit ((.|), awaitForever, runConduit, yield)
 import Data.Default.Class (Default)
-import Data.Int (Int64)
 import Data.Map (Map)
 import Data.Set ((\\), Set)
 import Data.Time (DiffTime, diffTimeToPicoseconds, picosecondsToDiffTime)
@@ -83,6 +82,7 @@ import OM.Show (showj, showt)
 import OM.Socket (AddressDescription(AddressDescription),
   Endpoint(Endpoint), openIngress)
 import OM.Socket.Server (connectServer, openServer)
+import OM.Time (MonadTimeSpec(getTime), addTime, diffTimeSpec)
 import System.Clock (TimeSpec)
 import System.Random.Shuffle (shuffleM)
 import qualified Data.Binary as Binary
@@ -91,7 +91,6 @@ import qualified Data.Map as Map
 import qualified Data.Set as Set
 import qualified OM.Fork as Fork
 import qualified OM.Socket.Server as Server
-import qualified System.Clock as Clock
 
 {-# ANN module ("HLint: ignore Redundant <$>" :: String) #-}
 {-# ANN module ("HLint: ignore Use underscore" :: String) #-}
@@ -104,6 +103,7 @@ type MonadConstraints m =
   ( MonadCatch m
   , MonadFail m
   , MonadLoggerIO m
+  , MonadTimeSpec m
   , MonadUnliftIO m
   , Race
   )
@@ -336,6 +336,7 @@ executeRuntime
      , MonadCatch m
      , MonadFail m
      , MonadLoggerIO m
+     , MonadTimeSpec m
      , MonadUnliftIO m
      , Race
      , Show (Output e)
@@ -476,7 +477,11 @@ handleOutstandingJoins = do
 
 
 {- | Handle any broadcall timeouts. -}
-handleBroadcallTimeouts :: (MonadIO m) => StateT (RuntimeState e) m ()
+handleBroadcallTimeouts
+  :: ( MonadIO m
+     , MonadTimeSpec m
+     )
+  => StateT (RuntimeState e) m ()
 handleBroadcallTimeouts = do
   broadcalls <- gets rsBroadcalls
   now <- getTime
@@ -502,6 +507,7 @@ handleRuntimeMessage
      , Event Peer e
      , MonadCatch m
      , MonadLoggerIO m
+     , MonadTimeSpec m
      , Show (Output e)
      , Show (State e)
      , Show e
@@ -1014,29 +1020,6 @@ respond :: (MonadIO m) => Responder a -> a -> m ()
 respond responder = void . Fork.respond responder
 
 
-{- | Add a 'DiffTime' to a 'TimeSpec'. -}
-addTime :: DiffTime -> TimeSpec -> TimeSpec
-addTime diff time =
-  let
-    rat = toRational diff
-
-    secDiff :: Int64
-    secDiff = truncate rat
-
-    nsecDiff :: Int64
-    nsecDiff = truncate ((toRational diff - toRational secDiff) * 1_000_000_000)
-  in
-    Clock.TimeSpec {
-      Clock.sec = Clock.sec time + secDiff,
-      Clock.nsec = Clock.nsec time + nsecDiff
-    }
-
-
-{- | Specialized 'Clock.getTime'. -}
-getTime :: (MonadIO m) => m TimeSpec
-getTime = liftIO $ Clock.getTime Clock.Monotonic
-
-
 {- |
   Retrieve some basic stats that can be used to intuit the health of
   the cluster.
@@ -1047,13 +1030,7 @@ getStats runtime = do
   now <- liftIO getTime
   pure
     Stats
-      { timeWithoutProgress = diffTime now . snd <$> divergent_
+      { timeWithoutProgress = diffTimeSpec now . snd <$> divergent_
       }
-
-
-{- | Take the difference of two time specs. -}
-diffTime :: TimeSpec -> TimeSpec -> DiffTime
-diffTime a b =
-  realToFrac (Clock.toNanoSecs (Clock.diffTimeSpec a b)) / 1_000_000_000
 
 
