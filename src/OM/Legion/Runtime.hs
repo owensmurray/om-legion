@@ -10,7 +10,6 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 
@@ -57,11 +56,12 @@ import Data.Binary (Binary)
 import Data.ByteString.Lazy (ByteString)
 import Data.CRDT.EventFold (Event(Output, State),
   UpdateResult(urEventFold, urOutputs), Diff, EventFold, EventId,
-  divergent, infimumId, projParticipants)
+  infimumId, projParticipants)
 import Data.CRDT.EventFold.Monad (MonadUpdateEF(diffMerge, disassociate,
   event, fullMerge, participate), EventFoldT, runEventFoldT)
 import Data.Conduit ((.|), awaitForever, runConduit, yield)
 import Data.Default.Class (Default)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.Map (Map)
 import Data.Set ((\\), Set)
 import Data.Time (DiffTime, diffTimeToPicoseconds, picosecondsToDiffTime)
@@ -73,8 +73,8 @@ import OM.Fork (Actor(Msg, actorChan), Race, Responder, race)
 import OM.Legion.Conduit (chanToSink)
 import OM.Legion.Connection (JoinResponse(JoinOk),
   RuntimeState(RuntimeState, rsBroadcalls, rsCalls, rsClusterState,
-  rsConnections, rsDivergent, rsJoins, rsNextId, rsNotify, rsSelf,
-  rsWaiting), EventConstraints, disconnect, peerMessagePort, sendPeer)
+  rsConnections, rsJoins, rsNextId, rsNotify, rsSelf, rsWaiting),
+  EventConstraints, disconnect, peerMessagePort, sendPeer)
 import OM.Legion.MsgChan (MessageId(M), Peer(unPeer), PeerMessage(PMCall,
   PMCallResponse, PMCast, PMFullMerge, PMMerge, PMOutputs), ClusterName)
 import OM.Logging (withPrefix)
@@ -140,6 +140,7 @@ forkLegionary
     rts <- makeRuntimeState notify startupMode
     runtimeChan <- RChan <$> liftIO newChan
     logging <- withPrefix (logPrefix (rsSelf rts)) <$> askLoggerIO
+    rStats <- liftIO $ newIORef mempty
     (`runLoggingT` logging) $
       executeRuntime
         handleUserCall
@@ -147,6 +148,7 @@ forkLegionary
         resendInterval
         rts
         runtimeChan
+        rStats
     let
       clusterId :: ClusterName
       clusterId = EF.origin (rsClusterState rts)
@@ -155,6 +157,7 @@ forkLegionary
         { rChan = runtimeChan
         , rSelf = rsSelf rts
         , rClusterId = clusterId
+        , rStats
         }
   where
     logPrefix :: Peer -> LogStr
@@ -166,6 +169,7 @@ data Runtime e = Runtime
   {      rChan :: RChan e
   ,      rSelf :: Peer
   , rClusterId :: ClusterName
+  ,     rStats :: IORef (Map Peer TimeSpec)
   }
 instance Actor (Runtime e) where
   type Msg (Runtime e) = RuntimeMessage e
@@ -310,7 +314,7 @@ data RuntimeMessage e
   | SendCallResponse Peer MessageId ByteString
   | HandleCallResponse Peer MessageId ByteString
   | Resend (Responder ())
-  | GetStats (Responder (Map Peer (EventId Peer, TimeSpec)))
+  | GetStats (Responder (EventFold ClusterName Peer e))
 deriving stock instance
     ( Show e
     , Show (Output e)
@@ -361,6 +365,7 @@ executeRuntime
        A source of requests, together with a way to respond to the
        requets.
      -}
+  -> IORef (Map Peer TimeSpec)
   -> m ()
 executeRuntime
     handleUserCall
@@ -368,6 +373,7 @@ executeRuntime
     resendInterval
     rts
     runtimeChan
+    peerStats
   = do
     {- Start the various messages sources. -}
     race "om-legion peer listener" runPeerListener
@@ -409,6 +415,11 @@ executeRuntime
         runConduit (
           openIngress (Endpoint addy Nothing)
           .| awaitForever (\ (msgSource, msg) -> do
+              liftIO $ do
+                now <- getTime
+                atomicModifyIORef'
+                  peerStats
+                  (\peerTimes -> (Map.insert msgSource now peerTimes, ()))
               logDebug $ "Handling: " <> showt (msgSource :: Peer, msg)
               case msg of
                 PMFullMerge ps -> yield (FullMerge ps)
@@ -524,7 +535,7 @@ handleRuntimeMessage (Outputs outputs) =
 
 handleRuntimeMessage (GetStats responder) =
   {-# SCC "GetStats" #-}
-  respond responder =<< gets rsDivergent
+  respond responder =<< gets rsClusterState
 
 handleRuntimeMessage (ApplyFast e responder) =
   {-# SCC "ApplyFast" #-}
@@ -734,40 +745,22 @@ updateClusterAs
   -> EventFoldT ClusterName Peer e m a
   -> m a
 updateClusterAs asPeer action = do
-  (oldCluster, (oldDivergent, notify))
-    <- gets (rsClusterState &&& rsDivergent &&& rsNotify)
+  (oldCluster, notify)
+    <- gets (rsClusterState &&& rsNotify)
   (v, ur) <- runEventFoldT asPeer oldCluster action
   do {- Update the cluster -}
     let
       newCluster :: EventFold ClusterName Peer e
       newCluster = urEventFold ur
     when (oldCluster /= newCluster) $ liftIO (notify newCluster)
-    now <- liftIO getTime
     modify'
       (
         let
           doModify state = 
-            let
-              newDivergent :: Map Peer (EventId Peer, TimeSpec)
-              newDivergent =
-                Map.differenceWith
-                  (
-                    let
-                      doDifferenceWith new@(newEid, _) old@(oldEid, _) =
-                        if newEid > oldEid
-                          then Just new
-                          else Just old
-                    in
-                      doDifferenceWith
-                  )
-                  ((,now) <$> divergent newCluster)
-                  oldDivergent
-            in
-              newCluster `seq` newDivergent `seq`
-              state
-                { rsClusterState = newCluster
-                , rsDivergent = newDivergent
-                }
+            newCluster `seq`
+            state
+              { rsClusterState = newCluster
+              }
         in
           doModify
       )
@@ -968,7 +961,6 @@ makeRuntimeState
         , rsNextId
         , rsNotify = notify self
         , rsJoins = mempty
-        , rsDivergent = mempty
         }
 
 
@@ -1026,11 +1018,11 @@ respond responder = void . Fork.respond responder
 -}
 getStats :: (MonadIO m) => Runtime e -> m Stats
 getStats runtime = do
-  divergent_ <- Fork.call runtime GetStats
   now <- liftIO getTime
+  stats <- liftIO $ readIORef (rStats runtime)
   pure
     Stats
-      { timeWithoutProgress = diffTimeSpec now . snd <$> divergent_
+      { timeWithoutProgress = diffTimeSpec now <$> stats
       }
 
 
