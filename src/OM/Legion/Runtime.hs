@@ -513,67 +513,83 @@ handleRuntimeMessage
   -> StateT (RuntimeState e) m ()
 
 handleRuntimeMessage (Outputs outputs) =
+  {-# SCC "Outputs" #-}
   respondToWaiting outputs
 
 handleRuntimeMessage (GetStats responder) =
+  {-# SCC "GetStats" #-}
   respond responder =<< gets rsDivergent
 
 handleRuntimeMessage (ApplyFast e responder) =
+  {-# SCC "ApplyFast" #-}
   updateCluster $
     fst <$> event e >>= respond responder
 
-handleRuntimeMessage (ApplyConsistent e responder) = do
-  updateCluster $ do
-    (_v, sid) <- event e
-    lift (waitOn sid responder)
-  rs <- get
-  logDebug $ "Waiting: " <> showt (rsWaiting rs)
+handleRuntimeMessage (ApplyConsistent e responder) =
+  {-# SCC "ApplyConsistent" #-}
+  (
+    do
+      updateCluster $ do
+        (_v, sid) <- event e
+        lift (waitOn sid responder)
+      rs <- get
+      logDebug $ "Waiting: " <> showt (rsWaiting rs)
+  )
 
-handleRuntimeMessage (Eject peer responder) = do
-  updateClusterAs peer $
-    void $ disassociate peer
-  propagate
-  {- ↓
-    This is an awful hack. The problem is that 'propagate' uses
-    'sendPeer', but 'sendPeer' itself is asynchronous (though it should be
-    very fast). The correct solution is a bit tricky. We can either figure
-    out some way to block all the way down through the internals of the
-    connection management, or else maybe extend the "join port" server
-    endpoint to accept eject notifications as well as join requests.
-  -}
-  liftIO $ threadDelay 500_000
-  respond responder ()
+handleRuntimeMessage (Eject peer responder) =
+  {-# SCC "Eject" #-}
+  do
+    updateClusterAs peer $
+      void $ disassociate peer
+    propagate
+    {- ↓
+      This is an awful hack. The problem is that 'propagate' uses
+      'sendPeer', but 'sendPeer' itself is asynchronous (though it should be
+      very fast). The correct solution is a bit tricky. We can either figure
+      out some way to block all the way down through the internals of the
+      connection management, or else maybe extend the "join port" server
+      endpoint to accept eject notifications as well as join requests.
+    -}
+    liftIO $ threadDelay 500_000
+    respond responder ()
 
 handleRuntimeMessage (Merge other) =
+  {-# SCC "Merge" #-}
   updateCluster $
     diffMerge other >>= \case
       Left err -> logError $ "Bad cluster merge: " <> showt err
       Right () -> return ()
 
 handleRuntimeMessage (FullMerge other) =
+  {-# SCC "FullMerge" #-}
   updateCluster $
     fullMerge other >>= \case
       Left err -> logError $ "Bad cluster merge: " <> showt err
       Right () -> return ()
 
-handleRuntimeMessage (Join (JoinRequest peer) responder) = do
-  logInfo $ "Handling join from peer: " <> showt peer
-  updateCluster (do
-      void $ disassociate peer
-      void $ participate peer
-    )
-  RuntimeState {rsClusterState} <- get
-  logInfo $ "Join immediately with: " <> showt rsClusterState
-  respond responder (JoinOk rsClusterState)
+handleRuntimeMessage (Join (JoinRequest peer) responder) =
+  {-# SCC "Join" #-}
+  do
+    logInfo $ "Handling join from peer: " <> showt peer
+    updateCluster (do
+        void $ disassociate peer
+        void $ participate peer
+      )
+    RuntimeState {rsClusterState} <- get
+    logInfo $ "Join immediately with: " <> showt rsClusterState
+    respond responder (JoinOk rsClusterState)
 
 handleRuntimeMessage (ReadState responder) =
+  {-# SCC "ReadState" #-}
   respond responder . rsClusterState =<< get
 
-handleRuntimeMessage (Call target msg responder) = do
-    mid <- newMessageId
-    source <- gets rsSelf
-    setCallResponder mid
-    sendPeer (PMCall source mid msg) target
+handleRuntimeMessage (Call target msg responder) =
+    {-# SCC "Call" #-}
+    do
+      mid <- newMessageId
+      source <- gets rsSelf
+      setCallResponder mid
+      sendPeer (PMCall source mid msg) target
   where
     setCallResponder :: (Monad m)
       => MessageId
@@ -585,14 +601,17 @@ handleRuntimeMessage (Call target msg responder) = do
         }
 
 handleRuntimeMessage (Cast target msg) =
+  {-# SCC "Cast" #-}
   sendPeer (PMCast msg) target
 
-handleRuntimeMessage (Broadcall timeout msg responder) = do
-    expiry <- addTime timeout <$> getTime
-    mid <- newMessageId
-    source <- gets rsSelf
-    setBroadcallResponder expiry mid
-    mapM_ (sendPeer (PMCall source mid msg)) =<< getPeers
+handleRuntimeMessage (Broadcall timeout msg responder) =
+    {-# SCC "Broadcall" #-}
+    do
+      expiry <- addTime timeout <$> getTime
+      mid <- newMessageId
+      source <- gets rsSelf
+      setBroadcallResponder expiry mid
+      mapM_ (sendPeer (PMCall source mid msg)) =<< getPeers
   where
     setBroadcallResponder :: (Monad m)
       => TimeSpec
@@ -614,46 +633,52 @@ handleRuntimeMessage (Broadcall timeout msg responder) = do
         }
 
 handleRuntimeMessage (Broadcast msg) =
+  {-# SCC "Broadcast" #-}
   mapM_ (sendPeer (PMCast msg)) =<< getPeers
 
-handleRuntimeMessage (SendCallResponse target mid msg) = do
-  source <- gets rsSelf
-  sendPeer (PMCallResponse source mid msg) target
+handleRuntimeMessage (SendCallResponse target mid msg) =
+  {-# SCC "SendCallResponse" #-}
+  do
+    source <- gets rsSelf
+    sendPeer (PMCallResponse source mid msg) target
 
-handleRuntimeMessage (HandleCallResponse source mid msg) = do
-  state@RuntimeState {rsCalls, rsBroadcalls} <- get
-  case Map.lookup mid rsCalls of
-    Nothing ->
-      case Map.lookup mid rsBroadcalls of
-        Nothing -> return ()
-        Just (responses, responder, expiry) ->
-          let
-            responses2 = Map.insert source (Just msg) responses
-            response = Map.fromList [
-                (peer, r)
-                | (peer, Just r) <- Map.toList responses2
-              ]
-            peers = Map.keysSet responses2
-          in
-            if Set.null (peers \\ Map.keysSet response)
-              then do
-                respond responder (Just <$> response)
-                put state {
-                    rsBroadcalls = Map.delete mid rsBroadcalls
-                  }
-              else
-                put state {
-                    rsBroadcalls =
-                      Map.insert
-                        mid
-                        (responses2, responder, expiry)
-                        rsBroadcalls
-                  }
-    Just responder -> do
-      respond responder msg
-      put state {rsCalls = Map.delete mid rsCalls}
+handleRuntimeMessage (HandleCallResponse source mid msg) =
+  {-# SCC "HandleCallResponse" #-}
+  do
+    state@RuntimeState {rsCalls, rsBroadcalls} <- get
+    case Map.lookup mid rsCalls of
+      Nothing ->
+        case Map.lookup mid rsBroadcalls of
+          Nothing -> return ()
+          Just (responses, responder, expiry) ->
+            let
+              responses2 = Map.insert source (Just msg) responses
+              response = Map.fromList [
+                  (peer, r)
+                  | (peer, Just r) <- Map.toList responses2
+                ]
+              peers = Map.keysSet responses2
+            in
+              if Set.null (peers \\ Map.keysSet response)
+                then do
+                  respond responder (Just <$> response)
+                  put state {
+                      rsBroadcalls = Map.delete mid rsBroadcalls
+                    }
+                else
+                  put state {
+                      rsBroadcalls =
+                        Map.insert
+                          mid
+                          (responses2, responder, expiry)
+                          rsBroadcalls
+                    }
+      Just responder -> do
+        respond responder msg
+        put state {rsCalls = Map.delete mid rsCalls}
 
 handleRuntimeMessage (Resend responder) =
+  {-# SCC "Resend" #-}
   propagate >>= respond responder
 
 
