@@ -79,9 +79,8 @@ import OM.Legion.MsgChan (MessageId(M), Peer(unPeer), PeerMessage(PMCall,
   PMCallResponse, PMCast, PMFullMerge, PMMerge, PMOutputs), ClusterName)
 import OM.Logging (withPrefix)
 import OM.Show (showj, showt)
-import OM.Socket (AddressDescription(AddressDescription),
-  Endpoint(Endpoint), openIngress)
-import OM.Socket.Server (connectServer, openServer)
+import OM.Socket (AddressDescription(AddressDescription), connectServer,
+  openIngress, openServer)
 import OM.Time (MonadTimeSpec(getTime), addTime, diffTimeSpec)
 import System.Clock (TimeSpec)
 import System.Random.Shuffle (shuffleM)
@@ -90,7 +89,6 @@ import qualified Data.CRDT.EventFold as EF
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import qualified OM.Fork as Fork
-import qualified OM.Socket.Server as Server
 
 {-# ANN module ("HLint: ignore Redundant <$>" :: String) #-}
 {-# ANN module ("HLint: ignore Use underscore" :: String) #-}
@@ -413,7 +411,7 @@ executeRuntime
             )
       in
         runConduit (
-          openIngress (Endpoint addy Nothing)
+          openIngress addy
           .| awaitForever (\ (msgSource, msg) -> do
               liftIO $ do
                 now <- getTime
@@ -441,9 +439,9 @@ executeRuntime
     runJoinListener :: (MonadLoggerIO m, MonadFail m) => m ()
     runJoinListener =
       let
-        addy :: Server.AddressDescription
+        addy :: AddressDescription
         addy =
-          Server.AddressDescription
+          AddressDescription
             (
               unPeer (rsSelf rts)
               <> ":" <> showt joinMessagePort
@@ -451,7 +449,7 @@ executeRuntime
       in
         runConduit (
           pure ()
-          .| openServer (Server.Endpoint addy Nothing)
+          .| openServer addy Nothing
           .| awaitForever (\(req, respond_) -> lift $
                Fork.call runtimeChan (Join req) >>= respond_
              )
@@ -937,9 +935,9 @@ makeRuntimeState
       -> m (JoinResponse e)
     requestJoin joinMsg = ($ joinMsg) =<< connectServer addr Nothing
 
-    addr :: Server.AddressDescription
+    addr :: AddressDescription
     addr =
-      Server.AddressDescription
+      AddressDescription
         (
           unPeer targetPeer
           <> ":" <> showt joinMessagePort
