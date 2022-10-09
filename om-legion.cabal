@@ -1,10 +1,10 @@
 cabal-version:       3.0
 name:                om-legion
 version:             6.9.0.1
-synopsis:            Core Legion Framework.
+synopsis:            Legion Framework.
 -- description:         
 homepage:            https://github.com/owensmurray/om-legion
-license:             NONE
+license:             MIT
 license-file:        LICENSE
 author:              Rick Owens
 maintainer:          rick@owensmurray.com
@@ -12,6 +12,7 @@ copyright:           2022 Owens Murray, LLC.
 category:            Network
 build-type:          Simple
 extra-source-files:
+  LICENSE
   README.md
   test/k8s/k8s.mustache
 
