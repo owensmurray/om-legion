@@ -36,8 +36,7 @@ import Numeric.Natural (Natural)
 import OM.Kubernetes (Namespace(Namespace))
 import OM.Legion (ClusterName, Peer, Stats)
 import OM.Show (showt)
-import OM.Socket.Server (AddressDescription(AddressDescription),
-  connectServer)
+import OM.Socket (AddressDescription(AddressDescription), connectServer)
 import qualified Text.Mustache as Mustache (Template, substitute)
 import qualified Text.Mustache.Compile as Mustache (embedSingleTemplate)
 

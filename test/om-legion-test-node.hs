@@ -26,11 +26,12 @@ import Network.HostName (HostName, getHostName)
 import OM.Fork (race, runRace, wait)
 import OM.Kubernetes (Pod(unPod), newK8s, queryPods)
 import OM.Legion (Peer(Peer), StartupMode(JoinCluster, NewCluster),
-  Runtime, applyConsistent, eject, forkLegionary, getSelf, getStats, readState)
+  Runtime, applyConsistent, eject, forkLegionary, getSelf, getStats,
+  readState)
 import OM.Logging (fdLogging, parseLevel, stdoutLogging, teeLogging,
   withStandardFormat)
 import OM.Show (showt)
-import OM.Socket.Server (Endpoint(Endpoint, bindAddr, tls), openServer)
+import OM.Socket (openServer)
 import System.Environment (getEnv)
 import System.Exit (ExitCode(ExitFailure))
 import System.IO (IOMode(WriteMode), withFile)
@@ -77,11 +78,7 @@ main = do
             runConduit
               (
                 pure ()
-                .| openServer 
-                     Endpoint
-                       { bindAddr = "0.0.0.0:9999"
-                       , tls = Nothing
-                       }
+                .| openServer "0.0.0.0:9999" Nothing
                 .| awaitForever (lift . void . handle runtime)
               )
           wait

@@ -1,10 +1,10 @@
 cabal-version:       3.0
 name:                om-legion
-version:             6.9.0.1
-synopsis:            Core Legion Framework.
+version:             6.9.0.2
+synopsis:            Legion Framework.
 -- description:         
 homepage:            https://github.com/owensmurray/om-legion
-license:             NONE
+license:             MIT
 license-file:        LICENSE
 author:              Rick Owens
 maintainer:          rick@owensmurray.com
@@ -12,6 +12,7 @@ copyright:           2022 Owens Murray, LLC.
 category:            Network
 build-type:          Simple
 extra-source-files:
+  LICENSE
   README.md
   test/k8s/k8s.mustache
 
@@ -34,9 +35,8 @@ common dependencies
     , om-fork            >= 0.7.1.3   && < 0.8
     , om-logging         >= 1.1.0.1   && < 1.2
     , om-show            >= 0.1.2.1   && < 0.2
-    , om-socket          >= 0.9.0.2   && < 0.10
-    , om-socket-server   >= 0.1.0.3   && < 0.2
-    , om-time            >= 0.2.1.0   && < 0.3
+    , om-socket          >= 0.11.0.1  && < 0.12
+    , om-time            >= 0.3.0.0   && < 0.4
     , random-shuffle     >= 0.0.4     && < 0.1
     , safe-exceptions    >= 0.1.7.3   && < 0.2
     , stm                >= 2.5.0.0   && < 2.6
@@ -76,7 +76,7 @@ common test-dependencies
     , lens             >= 5.0.1    && < 5.1
     , lens-aeson       >= 1.1.3    && < 1.2
     , mustache         >= 2.4.1    && < 2.5
-    , om-kubernetes    >= 2.3.1.1  && < 2.4
+    , om-kubernetes    >= 2.3.1.3  && < 2.4
     , safe             >= 0.3.19   && < 0.4
     , template-haskell >= 2.17.0.0 && < 2.18
     , unix             >= 2.7.2.2  && < 2.8
