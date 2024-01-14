@@ -21,7 +21,7 @@ module OM.Legion.Connection (
 ) where
 
 import Control.Concurrent.Async (async)
-import Control.Exception.Safe (MonadCatch, finally, tryAny)
+import Control.Exception.Safe (finally, tryAny)
 import Control.Monad (void)
 import Control.Monad.IO.Class (MonadIO(liftIO))
 import Control.Monad.Logger.CallStack (LoggingT(runLoggingT),
@@ -41,6 +41,9 @@ import OM.Legion.MsgChan (Peer(unPeer), ClusterName, MessageId,
   PeerMessage, close, enqueueMsg, newMsgChan, stream)
 import OM.Show (showt)
 import OM.Socket (AddressDescription(AddressDescription), openEgress)
+import Prelude (Applicative(pure), Bool(False, True), Either(Left,
+  Right), Maybe(Just, Nothing), Monad((>>=)), Semigroup((<>)), ($),
+  (.), Eq, IO, Show)
 import System.Clock (TimeSpec)
 import qualified Data.Map as Map
 
@@ -62,7 +65,6 @@ newtype Connection e = Connection
 createConnection
   :: forall m e.
      ( EventConstraints e
-     , MonadCatch m
      , MonadLoggerIO m
      , MonadState (RuntimeState e) m
      )
@@ -83,7 +85,7 @@ createConnection peer = do
               <> ":" <> showt peerMessagePort
             )
       in
-        finally 
+        finally
           (
             (tryAny . runConduit) (
               stream rsSelf msgChan
@@ -95,7 +97,7 @@ createConnection peer = do
               Right () -> logInfo "Disconnecting because source dried up."
           )
           (close msgChan)
-      
+
     let
       conn :: Connection e
       conn = Connection (enqueueMsg msgChan)
@@ -205,7 +207,6 @@ disconnect peer = do
 sendPeer
   :: forall m e.
      ( EventConstraints e
-     , MonadCatch m
      , MonadLoggerIO m
      , MonadState (RuntimeState e) m
      )

@@ -1,5 +1,7 @@
 {-# LANGUAGE NumericUnderscores #-}
 
+{-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
+
 {- | Description: "Scale up" test driver. -}
 module Main (main) where
 

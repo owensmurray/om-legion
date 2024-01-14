@@ -26,12 +26,16 @@ import Control.Monad.Logger.CallStack (LogLevel(LevelDebug, LevelError,
   LevelInfo, LevelOther, LevelWarn), LoggingT(runLoggingT), MonadLogger,
   MonadLoggerIO, logDebug, logError, logInfo)
 import Data.Aeson (Value, eitherDecode)
-import Data.Aeson.Lens (AsPrimitive(_String), AsValue(_Array), key)
+import Data.Aeson.Lens (AsValue(_Array, _String), key)
 import Data.Foldable (for_)
 import Data.String (IsString(fromString))
 import OM.Fork (Race, runRace)
 import OM.Logging (standardLogging)
 import OM.Show (showt)
+import Prelude (Applicative((<*>), pure), Bool(False, True), Either(Left,
+  Right), Eq((==)), Foldable(foldl, null), Maybe(Just, Nothing),
+  Monad((>>=)), MonadFail(fail), Num((-)), Semigroup((<>)), Show(show),
+  ($), (&&), (.), (<$>), IO, Int, String, flip, id, not)
 import System.Console.GetOpt (ArgDescr(OptArg, ReqArg), ArgOrder(Permute),
   OptDescr(Option), getOpt, usageInfo)
 import System.Environment (getArgs)

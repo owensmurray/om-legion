@@ -20,7 +20,7 @@ import Control.Monad (void)
 import Control.Monad.IO.Class (MonadIO(liftIO))
 import Control.Monad.Logger.CallStack (LoggingT(runLoggingT), MonadLogger,
   logDebug)
-import Data.Aeson.Lens (AsPrimitive(_String), AsValue(_Array), key)
+import Data.Aeson.Lens (AsValue(_Array, _String), key)
 import Data.String (IsString(fromString))
 import Network.HostName (HostName, getHostName)
 import OM.Fork (race, runRace, wait)
@@ -32,6 +32,9 @@ import OM.Logging (fdLogging, parseLevel, stdoutLogging, teeLogging,
   withStandardFormat)
 import OM.Show (showt)
 import OM.Socket (openServer)
+import Prelude (Applicative(pure), Eq((==)), Maybe(Nothing), Monad((>>=)),
+  Num((+)), Semigroup((<>)), ($), (&&), (.), (<$>), (=<<), Bool, IO,
+  filter, flip, fromIntegral, not)
 import System.Environment (getEnv)
 import System.Exit (ExitCode(ExitFailure))
 import System.IO (IOMode(WriteMode), withFile)
