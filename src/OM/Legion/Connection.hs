@@ -83,7 +83,7 @@ createConnection peer = do
               <> ":" <> showt peerMessagePort
             )
       in
-        finally 
+        finally
           (
             (tryAny . runConduit) (
               stream rsSelf msgChan
@@ -95,7 +95,7 @@ createConnection peer = do
               Right () -> logInfo "Disconnecting because source dried up."
           )
           (close msgChan)
-      
+
     let
       conn :: Connection e
       conn = Connection (enqueueMsg msgChan)
