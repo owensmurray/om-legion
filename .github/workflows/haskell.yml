@@ -109,7 +109,7 @@ jobs:
             mustache == 2.4.2,
             network == 3.1.4.0,
             om-fork == 0.7.1.9,
-            om-kubernetes == 2.3.1.7,
+            om-kubernetes == 2.3.1.8,
             om-logging == 1.1.0.8,
             om-show == 0.1.2.9,
             om-socket == 0.11.0.5,
