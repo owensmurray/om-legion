@@ -514,7 +514,6 @@ handleRuntimeMessage
      , Eq (Output e)
      , Eq e
      , Event Peer e
-     , MonadCatch m
      , MonadLoggerIO m
      , MonadTimeSpec m
      , Show (Output e)
@@ -716,7 +715,6 @@ newMessageId = do
 -}
 updateCluster
   :: ( EventConstraints e
-     , MonadCatch m
      , MonadLoggerIO m
      , MonadState (RuntimeState e) m
      )
@@ -735,7 +733,6 @@ updateCluster action = do
 updateClusterAs
   :: forall e m a.
      ( EventConstraints e
-     , MonadCatch m
      , MonadLoggerIO m
      , MonadState (RuntimeState e) m
      )
@@ -801,7 +798,6 @@ waitOn sid responder =
 {- | Propagates cluster information if necessary. -}
 propagate
   :: ( EventConstraints e
-     , MonadCatch m
      , MonadLoggerIO m
      , MonadState (RuntimeState e) m
      )
