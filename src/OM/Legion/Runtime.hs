@@ -59,8 +59,8 @@ import Data.CRDT.EventFold (Event(Output, State),
   infimumId, projParticipants)
 import Data.CRDT.EventFold.Monad (MonadUpdateEF(diffMerge, disassociate,
   event, fullMerge, participate), EventFoldT, runEventFoldT)
-import Data.Conduit ((.|), awaitForever, runConduit, yield)
 import Data.Default.Class (Default)
+import Data.Function ((&))
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.Map (Map)
 import Data.Set ((\\), Set)
@@ -70,7 +70,6 @@ import Data.UUID.V1 (nextUUID)
 import GHC.Generics (Generic)
 import Network.Socket (PortNumber)
 import OM.Fork (Actor(Msg, actorChan), Race, Responder, race)
-import OM.Legion.Conduit (chanToSink)
 import OM.Legion.Connection (JoinResponse(JoinOk),
   RuntimeState(RuntimeState, rsBroadcalls, rsCalls, rsClusterState,
   rsConnections, rsJoins, rsNextId, rsNotify, rsSelf, rsWaiting),
@@ -94,6 +93,7 @@ import qualified Data.CRDT.EventFold as EF
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import qualified OM.Fork as Fork
+import qualified Streaming.Prelude as Stream
 
 {-# ANN module ("HLint: ignore Redundant <$>" :: String) #-}
 {-# ANN module ("HLint: ignore Use underscore" :: String) #-}
@@ -255,7 +255,8 @@ call runtime target msg = Fork.call runtime (Call target msg)
 
 
 {- | Send the result of a call back to the peer that originated it. -}
-sendCallResponse :: (MonadIO m)
+sendCallResponse
+  :: (MonadIO m)
   => RChan e
   -> Peer
   -> MessageId
@@ -415,33 +416,39 @@ executeRuntime
               <> ":" <> showt peerMessagePort
             )
       in
-        runConduit (
-          openIngress addy
-          .| awaitForever (\ (msgSource, msg) -> do
-              liftIO $ do
-                now <- getTime
-                atomicModifyIORef'
-                  peerStats
-                  (\peerTimes -> (Map.insert msgSource now peerTimes, ()))
-              logDebug $ "Handling: " <> showt (msgSource :: Peer, msg)
-              case msg of
-                PMFullMerge ps -> yield (FullMerge ps)
-                PMOutputs outputs -> yield (Outputs outputs)
-                PMMerge ps -> yield (Merge ps)
-                PMCall source mid callMsg ->
-                  (liftIO . tryAny) (handleUserCall callMsg) >>= \case
-                    Left err ->
-                      logError
-                        $ "User call handling failed with: " <> showt err
-                    Right v -> sendCallResponse runtimeChan source mid v
-                PMCast castMsg -> liftIO (handleUserCast castMsg)
-                PMCallResponse source mid responseMsg ->
-                  yield (HandleCallResponse source mid responseMsg)
-             )
-          .| chanToSink (unRChan runtimeChan)
-        )
+        openIngress addy
+        `Stream.for`
+          (\ (msgSource, msg) -> do
+            liftIO $ do
+              now <- getTime
+              atomicModifyIORef'
+                peerStats
+                (\peerTimes -> (Map.insert msgSource now peerTimes, ()))
+            lift $ logDebug $ "Handling: " <> showt (msgSource :: Peer, msg)
+            case msg of
+              PMFullMerge ps -> Stream.yield (FullMerge ps)
+              PMOutputs outputs -> Stream.yield (Outputs outputs)
+              PMMerge ps -> Stream.yield (Merge ps)
+              PMCall source mid callMsg ->
+                (liftIO . tryAny) (handleUserCall callMsg) >>= \case
+                  Left err ->
+                    lift . logError
+                      $ "User call handling failed with: " <> showt err
+                  Right v -> sendCallResponse runtimeChan source mid v
+              PMCast castMsg -> liftIO (handleUserCast castMsg)
+              PMCallResponse source mid responseMsg ->
+                Stream.yield (HandleCallResponse source mid responseMsg)
+          )
+        & Stream.mapM_ (liftIO . writeChan (unRChan runtimeChan))
 
-    runJoinListener :: (MonadLoggerIO m, MonadFail m) => m ()
+    runJoinListener
+      :: ( MonadCatch m
+         , MonadFail m
+         , MonadLogger m
+         , MonadUnliftIO m
+         , Race
+         )
+      => m ()
     runJoinListener =
       let
         addy :: AddressDescription
@@ -452,13 +459,11 @@ executeRuntime
               <> ":" <> showt joinMessagePort
             )
       in
-        runConduit (
-          pure ()
-          .| openServer addy Nothing
-          .| awaitForever (\(req, respond_) -> lift $
-               Fork.call runtimeChan (Join req) >>= respond_
-             )
-        )
+        openServer addy Nothing
+        & Stream.mapM_
+            (\(req, respond_) ->
+              Fork.call runtimeChan (Join req) >>= respond_
+            )
 
     runPeriodicResent :: (MonadIO m) => m ()
     runPeriodicResent =

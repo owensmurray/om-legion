@@ -31,8 +31,8 @@ import Data.Aeson (ToJSON)
 import Data.Binary (Binary)
 import Data.ByteString.Lazy (ByteString)
 import Data.CRDT.EventFold (Event(Output, State), EventFold, EventId)
-import Data.Conduit ((.|), ConduitT, awaitForever, runConduit, yield)
 import Data.Default.Class (Default)
+import Data.Function (($), (&), (.))
 import Data.Map (Map)
 import GHC.Generics (Generic)
 import Network.Socket (PortNumber)
@@ -41,11 +41,11 @@ import OM.Legion.MsgChan (Peer(unPeer), ClusterName, MessageId,
   PeerMessage, close, enqueueMsg, newMsgChan, stream)
 import OM.Show (showt)
 import OM.Socket (AddressDescription(AddressDescription), openEgress)
-import Prelude (Applicative(pure), Bool(False, True), Either(Left,
-  Right), Maybe(Just, Nothing), Monad((>>=)), Semigroup((<>)), ($),
-  (.), Eq, IO, Show)
+import Prelude (Applicative(pure), Bool(False, True), Either(Left, Right),
+  Maybe(Just, Nothing), Monad((>>=)), Semigroup((<>)), Eq, IO, Show)
 import System.Clock (TimeSpec)
 import qualified Data.Map as Map
+import qualified Streaming.Prelude as Stream
 
 
 {- | A handle on the connection to a peer. -}
@@ -87,10 +87,10 @@ createConnection peer = do
       in
         finally
           (
-            (tryAny . runConduit) (
+            tryAny (
               stream rsSelf msgChan
-              .| logMessageSend
-              .| openEgress addy
+              & Stream.mapM logMessageSend
+              & openEgress addy
             ) >>= \case
               Left err ->
                 logInfo $ "Disconnecting because of error: " <> showt err
@@ -110,15 +110,13 @@ createConnection peer = do
     logMessageSend
       :: forall w.
          (MonadLogger w)
-      => ConduitT (Peer, PeerMessage e) (Peer, PeerMessage e) w ()
-    logMessageSend =
-      awaitForever
-        (\msg -> do
-          logDebug
-            $ "Sending Message to Peer (peer, msg): "
-            <> showt (peer, msg)
-          yield msg
-        )
+      => (Peer, PeerMessage e)
+      -> w (Peer, PeerMessage e)
+    logMessageSend msg = do
+      logDebug
+        $ "Sending Message to Peer (peer, msg): "
+        <> showt (peer, msg)
+      pure msg
 
 
 {- |

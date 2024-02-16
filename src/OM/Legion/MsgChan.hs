@@ -29,7 +29,6 @@ import Data.Binary (Binary, Word64)
 import Data.ByteString.Lazy (ByteString)
 import Data.CRDT.EventFold (Event(Output, State), Diff, EventFold,
   EventId)
-import Data.Conduit (ConduitT, yield)
 import Data.Foldable (traverse_)
 import Data.Map (Map)
 import Data.String (IsString)
@@ -37,6 +36,8 @@ import Data.Text (Text)
 import Data.UUID (UUID)
 import GHC.Generics (Generic)
 import Web.HttpApiData (FromHttpApiData, ToHttpApiData)
+import Streaming.Prelude (Stream, Of)
+import qualified Streaming.Prelude as Stream
 
 
 {- | A specialized channel for outgoing peer messages.  -}
@@ -60,7 +61,7 @@ stream
   :: MonadIO m
   => Peer
   -> MsgChan e
-  -> ConduitT void (Peer, PeerMessage e) m ()
+  -> Stream (Of (Peer, PeerMessage e)) m ()
 stream self (MsgChan chan) =
   (join . liftIO . atomically) $
     readTVar chan >>= \case
@@ -77,7 +78,7 @@ stream self (MsgChan chan) =
         -}
         writeTVar chan (Just []) 
         pure $ do
-          traverse_ (yield . (self,)) messages
+          traverse_ (Stream.yield . (self,)) messages
           stream self (MsgChan chan)
 
 
