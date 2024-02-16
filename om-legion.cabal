@@ -15,7 +15,6 @@ build-type:          Simple
 extra-source-files:
   LICENSE
   README.md
-  test/k8s/k8s.mustache
 
 common dependencies
   build-depends:
@@ -67,71 +66,4 @@ library
   -- other-extensions:    
   hs-source-dirs: src
   default-language: Haskell2010
-
-common test-dependencies
-  build-depends:
-    , om-legion
-
-    , hostname         >= 1.0      && < 1.1
-    , hspec            >= 2.11.7   && < 2.12
-    , lens             >= 5.2.3    && < 5.3
-    , lens-aeson       >= 1.2.3    && < 1.3
-    , mustache         >= 2.4.2    && < 2.5
-    , om-kubernetes    >= 2.3.1.8  && < 2.4
-    , safe             >= 0.3.20   && < 0.4
-    , template-haskell >= 2.21.0.0 && < 2.22
-    , unix             >= 2.8.5.0  && < 2.9
-    , unliftio         >= 0.2.25.0 && < 0.3
-    , vector           >= 0.13.1.0 && < 0.14
-
-executable om-legion-test-node
-  import: warnings, dependencies, test-dependencies
-  main-is: om-legion-test-node.hs
-  hs-source-dirs: test
-  other-modules:
-    Test.OM.Legion
-  default-language: Haskell2010
-
-executable om-legion-test-driver
-  import: warnings, dependencies, test-dependencies
-  main-is: om-legion-test-driver.hs
-  hs-source-dirs: test
-  other-modules:
-    Test.OM.Legion
-  default-language: Haskell2010
-
-executable om-legion-test-run
-  import: warnings, dependencies, test-dependencies
-  main-is: om-legion-test-run.hs
-  hs-source-dirs: test
-  other-modules:
-    Test.OM.Legion
-  default-language: Haskell2010
-
-executable om-legion-test-inc
-  import: warnings, dependencies, test-dependencies
-  main-is: om-legion-test-inc.hs
-  hs-source-dirs: test
-  other-modules:
-    Test.OM.Legion
-  default-language: Haskell2010
-  ghc-options: -threaded
-
-executable om-legion-test-stable
-  import: warnings, dependencies, test-dependencies
-  main-is: om-legion-test-stable.hs
-  hs-source-dirs: test
-  other-modules:
-    Test.OM.Legion
-  default-language: Haskell2010
-
-executable om-legion-test-profile
-  import: warnings, dependencies, test-dependencies
-  main-is: om-legion-test-profile.hs
-  hs-source-dirs: test
-  other-modules:
-    Test.OM.Legion
-  default-language: Haskell2010
-  ghc-options:
-    -threaded
 
