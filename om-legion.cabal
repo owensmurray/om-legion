@@ -1,6 +1,6 @@
 cabal-version:       3.0
 name:                om-legion
-version:             6.9.0.4
+version:             6.9.0.5
 synopsis:            Legion Framework.
 description:         Framework for managing shared, replicated state across a
                      number of homogeneous nodes.
