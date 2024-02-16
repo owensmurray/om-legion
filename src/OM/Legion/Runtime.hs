@@ -38,7 +38,7 @@ module OM.Legion.Runtime (
   Stats(..),
 ) where
 
-import Control.Arrow ((&&&))
+import Control.Arrow (Arrow((&&&)))
 import Control.Concurrent (Chan, newChan, readChan, threadDelay,
   writeChan)
 import Control.Exception.Safe (MonadCatch, tryAny)
@@ -50,7 +50,7 @@ import Control.Monad.Logger.CallStack (LoggingT(runLoggingT),
   logInfo)
 import Control.Monad.State (MonadState(get, put), StateT, evalStateT,
   gets, modify')
-import Control.Monad.Trans.Class (lift)
+import Control.Monad.Trans.Class (MonadTrans(lift))
 import Data.Aeson (ToJSON)
 import Data.Binary (Binary)
 import Data.ByteString.Lazy (ByteString)
@@ -82,6 +82,11 @@ import OM.Show (showj, showt)
 import OM.Socket (AddressDescription(AddressDescription), connectServer,
   openIngress, openServer)
 import OM.Time (MonadTimeSpec(getTime), addTime, diffTimeSpec)
+import Prelude (Applicative(pure), Either(Left, Right), Enum(succ),
+  Eq((/=)), Functor(fmap), Maybe(Just, Nothing), Monad((>>), (>>=),
+  return), Monoid(mempty), Ord((<=), (>=)), Semigroup((<>)), ($), (.),
+  (<$>), (=<<), IO, Int, MonadFail, Show, String, fst, mapM_, maybe,
+  seq, sequence_)
 import System.Clock (TimeSpec)
 import System.Random.Shuffle (shuffleM)
 import qualified Data.Binary as Binary
@@ -198,7 +203,7 @@ instance Binary Stats where
   put (Stats timeWithoutProgress) =
     Binary.put (diffTimeToPicoseconds <$> timeWithoutProgress)
 
-      
+
 {- | The type of the runtime message channel. -}
 newtype RChan e = RChan {
     unRChan :: Chan (RuntimeMessage e)
@@ -751,7 +756,7 @@ updateClusterAs asPeer action = do
     modify'
       (
         let
-          doModify state = 
+          doModify state =
             newCluster `seq`
             state
               { rsClusterState = newCluster
