@@ -39,8 +39,7 @@ module OM.Legion.Runtime (
 ) where
 
 import Control.Arrow (Arrow((&&&)))
-import Control.Concurrent (Chan, newChan, readChan, threadDelay,
-  writeChan)
+import Control.Concurrent (threadDelay)
 import Control.Exception.Safe (MonadCatch, tryAny)
 import Control.Monad (unless, void, when)
 import Control.Monad.IO.Class (MonadIO(liftIO))
@@ -55,8 +54,8 @@ import Data.Aeson (ToJSON)
 import Data.Binary (Binary)
 import Data.ByteString.Lazy (ByteString)
 import Data.CRDT.EventFold (Event(Output, State),
-  UpdateResult(urEventFold, urOutputs), Diff, EventFold, EventId,
-  infimumId, projParticipants)
+  UpdateResult(urEventFold, urOutputs), EventFold, EventId, infimumId,
+  projParticipants)
 import Data.CRDT.EventFold.Monad (MonadUpdateEF(diffMerge, disassociate,
   event, fullMerge, participate), EventFoldT, runEventFoldT)
 import Data.Default.Class (Default)
@@ -76,6 +75,11 @@ import OM.Legion.Connection (JoinResponse(JoinOk),
   EventConstraints, disconnect, peerMessagePort, sendPeer)
 import OM.Legion.MsgChan (MessageId(M), Peer(unPeer), PeerMessage(PMCall,
   PMCallResponse, PMCast, PMFullMerge, PMMerge, PMOutputs), ClusterName)
+import OM.Legion.RChan (JoinRequest(JoinRequest),
+  RuntimeMessage(ApplyConsistent, ApplyFast, Broadcall, Broadcast,
+  Call, Cast, Eject, FullMerge, GetStats, HandleCallResponse, Join,
+  Merge, Outputs, ReadState, Resend, SendCallResponse), RChan, newRChan,
+  readRChan)
 import OM.Logging (withPrefix)
 import OM.Show (showj, showt)
 import OM.Socket (AddressDescription(AddressDescription), connectServer,
@@ -141,7 +145,7 @@ forkLegionary
   = do
     logInfo $ "Starting up with the following Mode: " <> showt startupMode
     rts <- makeRuntimeState notify startupMode
-    runtimeChan <- RChan <$> liftIO newChan
+    runtimeChan <- newRChan
     logging <- withPrefix (logPrefix (rsSelf rts)) <$> askLoggerIO
     rStats <- liftIO $ newIORef mempty
     (`runLoggingT` logging) $
@@ -202,15 +206,6 @@ instance Binary Stats where
     Stats <$> (fmap picosecondsToDiffTime <$> Binary.get)
   put (Stats timeWithoutProgress) =
     Binary.put (diffTimeToPicoseconds <$> timeWithoutProgress)
-
-
-{- | The type of the runtime message channel. -}
-newtype RChan e = RChan {
-    unRChan :: Chan (RuntimeMessage e)
-  }
-instance Actor (RChan e) where
-  type Msg (RChan e) = RuntimeMessage e
-  actorChan = writeChan . unRChan
 
 
 {- |
@@ -298,36 +293,6 @@ getSelf :: Runtime e -> Peer
 getSelf = rSelf
 
 
-{- | The types of messages that can be sent to the runtime. -}
-data RuntimeMessage e
-  = ApplyFast e (Responder (Output e))
-  | ApplyConsistent e (Responder (Output e))
-  | Eject Peer (Responder ())
-  | Merge (Diff ClusterName Peer e)
-  | FullMerge (EventFold ClusterName Peer e)
-  | Outputs (Map (EventId Peer) (Output e))
-  | Join JoinRequest (Responder (JoinResponse e))
-  | ReadState (Responder (EventFold ClusterName Peer e))
-  | Call Peer ByteString (Responder ByteString)
-  | Cast Peer ByteString
-  | Broadcall
-      DiffTime
-      ByteString
-      (Responder (Map Peer (Maybe ByteString)))
-  | Broadcast ByteString
-  | SendCallResponse Peer MessageId ByteString
-  | HandleCallResponse Peer MessageId ByteString
-  | Resend (Responder ())
-  | GetStats (Responder (EventFold ClusterName Peer e))
-deriving stock instance
-    ( Show e
-    , Show (Output e)
-    , Show (State e)
-    )
-  =>
-    Show (RuntimeMessage e)
-
-
 {- |
   Execute the Legion runtime, with the given user definitions, and
   framework settings. This function never returns (except maybe with an
@@ -389,7 +354,7 @@ executeRuntime
           let
             -- handleMessages :: StateT (RuntimeState e3) m Void
             handleMessages = do
-              msg <- liftIO $ readChan (unRChan runtimeChan)
+              msg <- readRChan runtimeChan
               RuntimeState {rsClusterState = cluster1} <- get
               logDebug $ "Handling: " <> showt msg
               handleRuntimeMessage msg
@@ -439,7 +404,7 @@ executeRuntime
               PMCallResponse source mid responseMsg ->
                 Stream.yield (HandleCallResponse source mid responseMsg)
           )
-        & Stream.mapM_ (liftIO . writeChan (unRChan runtimeChan))
+        & Stream.mapM_ (Fork.cast runtimeChan)
 
     runJoinListener
       :: ( MonadCatch m
@@ -966,12 +931,6 @@ makeRuntimeState
         , rsNotify = notify self
         , rsJoins = mempty
         }
-
-
-{- | This is the type of a join request message. -}
-newtype JoinRequest = JoinRequest Peer
-  deriving stock (Generic, Show)
-instance Binary JoinRequest
 
 
 {- |

@@ -63,6 +63,7 @@ library
   other-modules:       
     OM.Legion.Connection
     OM.Legion.MsgChan
+    OM.Legion.RChan
     OM.Legion.Runtime
   -- other-extensions:    
   hs-source-dirs: src
