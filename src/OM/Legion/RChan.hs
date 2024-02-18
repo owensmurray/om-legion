@@ -14,7 +14,7 @@ module OM.Legion.RChan (
   newRChan,
 ) where
 
-import Control.Concurrent (Chan, newChan, writeChan, readChan)
+import Control.Concurrent (MVar, newEmptyMVar, putMVar, takeMVar)
 import Control.Monad.IO.Class (MonadIO(liftIO))
 import Data.Binary (Binary)
 import Data.ByteString.Lazy (ByteString)
@@ -30,11 +30,11 @@ import Prelude ((.), (<$>), Maybe, Show)
 
 {- | The type of the runtime message channel. -}
 newtype RChan e = RChan {
-    unRChan :: Chan (RuntimeMessage e)
+    unRChan :: MVar (RuntimeMessage e)
   }
 instance Actor (RChan e) where
   type Msg (RChan e) = RuntimeMessage e
-  actorChan = writeChan . unRChan
+  actorChan = putMVar . unRChan
 
 
 readRChan
@@ -42,12 +42,12 @@ readRChan
   => RChan e
   -> m (RuntimeMessage e)
 readRChan =
-  liftIO . readChan . unRChan
+  liftIO . takeMVar . unRChan
 
 
 newRChan :: (MonadIO m) => m (RChan e)
 newRChan =
-  RChan <$> liftIO newChan
+  RChan <$> liftIO newEmptyMVar
 
 
 {- | The types of messages that can be sent to the runtime. -}
