@@ -5,7 +5,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-{-| A specialized channel for incoming runtime messages.  -}
+{-| Description: A specialized channel for incoming runtime messages.  -}
 module OM.Legion.RChan (
   RChan,
   RuntimeMessage(..),
