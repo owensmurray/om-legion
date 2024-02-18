@@ -54,8 +54,8 @@ import Data.Aeson (ToJSON)
 import Data.Binary (Binary)
 import Data.ByteString.Lazy (ByteString)
 import Data.CRDT.EventFold (Event(Output, State),
-  UpdateResult(urEventFold, urOutputs), EventFold, EventId, infimumId,
-  projParticipants)
+  UpdateResult(urEventFold, urOutputs), EventFold, EventId, diffSize,
+  events, infimumId, projParticipants)
 import Data.CRDT.EventFold.Monad (MonadUpdateEF(diffMerge, disassociate,
   event, fullMerge, participate), EventFoldT, runEventFoldT)
 import Data.Default.Class (Default)
@@ -89,7 +89,7 @@ import Prelude (Applicative(pure), Either(Left, Right), Enum(succ),
   Eq((/=)), Functor(fmap), Maybe(Just, Nothing), Monad((>>), (>>=),
   return), Monoid(mempty), Ord((<=), (>=)), Semigroup((<>)), ($), (.),
   (<$>), (=<<), IO, Int, MonadFail, Show, String, fst, mapM_, maybe,
-  seq, sequence_)
+  otherwise, seq, sequence_)
 import System.Clock (TimeSpec)
 import System.Random.Shuffle (shuffleM)
 import qualified Data.Binary as Binary
@@ -786,15 +786,17 @@ propagate = do
     liftIO (shuffleM (Set.toList targets)) >>= \case
       [] -> return ()
       target:_ ->
-        -- case events target cluster of
-        --   Nothing -> do
-        --     logInfo
-        --       $ "Sending full merge because the target's join event "
-        --       <> "has not reaached the infimum"
-        --     sendPeer (PMFullMerge cluster) target
-        --   Just diff ->
-        --     sendPeer (PMMerge diff) target
-        sendPeer (PMFullMerge cluster) target
+        case events target cluster of
+          Nothing -> do
+            logInfo
+              $ "Sending full merge because the target's join event "
+              <> "has not reaached the infimum"
+            sendPeer (PMFullMerge cluster) target
+          Just diff
+            | diffSize diff <= 0 ->
+                sendPeer (PMMerge diff) target
+            | otherwise ->
+                sendPeer (PMFullMerge cluster) target
     disconnectObsolete
   where
     {- |
