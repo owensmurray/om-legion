@@ -9,7 +9,8 @@ jobs:
       matrix:
         ghc-version:
           - '9.8'
-        cabal-version: ['3.10.2.0']
+          - '9.10'
+        cabal-version: ['3.12.1.0']
     steps:
       # Checkout
       - uses: actions/checkout@v3
