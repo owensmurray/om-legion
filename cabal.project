@@ -4,3 +4,5 @@ package om-legion
   ghc-options:
     -Werror
 
+allow-newer: base, template-haskell
+
