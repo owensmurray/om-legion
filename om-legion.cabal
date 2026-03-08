@@ -1,6 +1,6 @@
 cabal-version:       3.0
 name:                om-legion
-version:             6.9.0.8
+version:             6.9.0.9
 synopsis:            Legion Framework.
 description:         Framework for managing shared, replicated state across a
                      number of homogeneous nodes.
@@ -9,12 +9,13 @@ license:             MIT
 license-file:        LICENSE
 author:              Rick Owens
 maintainer:          rick@owensmurray.com
-copyright:           2022 Owens Murray, LLC.
+copyright:           2026 Owens Murray, LLC.
 category:            Network
 build-type:          Simple
 extra-source-files:
   LICENSE
   README.md
+  changelog.md
 
 common dependencies
   build-depends:
